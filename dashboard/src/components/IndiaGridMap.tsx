@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { Minus, Plus, RotateCcw } from "lucide-react";
 import {
   BOX_ARABIAN_SEA,
   BOX_BAY_OF_BENGAL,
@@ -25,6 +26,28 @@ import {
 } from "../lib/colormaps";
 import { deltaToDisplay, formatDelta } from "../lib/shocks";
 
+export interface MapViewState {
+  zoom: number;
+  panX: number;
+  panY: number;
+}
+
+export const DEFAULT_MAP_VIEW: MapViewState = { zoom: 1, panX: 0, panY: 0 };
+
+const MIN_ZOOM = 1;
+const MAX_ZOOM = 4;
+const ZOOM_STEP = 0.5;
+
+function clampView(zoom: number, panX: number, panY: number): MapViewState {
+  const z = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, Math.round(zoom * 100) / 100));
+  const maxPan = (z - 1) / 2;
+  return {
+    zoom: z,
+    panX: Math.min(maxPan, Math.max(-maxPan, panX)),
+    panY: Math.min(maxPan, Math.max(-maxPan, panY)),
+  };
+}
+
 interface IndiaGridMapProps {
   /** [6, 32, 36] state or delta grid for the active day */
   stateGrid: number[][][];
@@ -41,6 +64,8 @@ interface IndiaGridMapProps {
   compact?: boolean;
   title?: string;
   subtitle?: string;
+  view?: MapViewState;
+  onViewChange?: (next: MapViewState) => void;
   onCellClick?: (lat: number, lon: number) => void;
 }
 
@@ -81,11 +106,45 @@ export function IndiaGridMap({
   compact = false,
   title,
   subtitle,
+  view,
+  onViewChange,
   onCellClick,
 }: IndiaGridMapProps) {
   const fieldCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const streamCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const viewportRef = useRef<HTMLDivElement | null>(null);
+  const dragRef = useRef<{
+    pointerId: number;
+    startX: number;
+    startY: number;
+    startPanX: number;
+    startPanY: number;
+    moved: boolean;
+  } | null>(null);
+  const suppressClickRef = useRef(false);
+
+  const [internalView, setInternalView] = useState<MapViewState>(DEFAULT_MAP_VIEW);
+  const [isDragging, setIsDragging] = useState(false);
   const [hover, setHover] = useState<{ i: number; j: number; lat: number; lon: number } | null>(null);
+
+  const activeView = view ?? internalView;
+  const setView = (next: MapViewState) => {
+    if (onViewChange) {
+      onViewChange(next);
+    } else {
+      setInternalView(next);
+    }
+  };
+
+  const zoomBy = (delta: number) => {
+    const nextZoom = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, activeView.zoom + delta));
+    const ratio = nextZoom / activeView.zoom;
+    setView(clampView(nextZoom, activeView.panX * ratio, activeView.panY * ratio));
+  };
+
+  const resetZoom = () => {
+    setView(DEFAULT_MAP_VIEW);
+  };
 
   const isDelta = mode === "delta";
   const meta = CHANNEL_META[channel];
@@ -189,7 +248,42 @@ export function IndiaGridMap({
     return () => window.cancelAnimationFrame(rafId);
   }, [showVectors, isDelta, stateGrid]);
 
+  const handlePointerDown = (e: React.PointerEvent<SVGSVGElement>) => {
+    if (e.button === 0 && activeView.zoom > 1) {
+      e.currentTarget.setPointerCapture(e.pointerId);
+      dragRef.current = {
+        pointerId: e.pointerId,
+        startX: e.clientX,
+        startY: e.clientY,
+        startPanX: activeView.panX,
+        startPanY: activeView.panY,
+        moved: false,
+      };
+      setIsDragging(true);
+    }
+  };
+
   const handlePointerMove = (e: React.PointerEvent<SVGSVGElement>) => {
+    const drag = dragRef.current;
+    if (drag && drag.pointerId === e.pointerId && viewportRef.current) {
+      const dx = e.clientX - drag.startX;
+      const dy = e.clientY - drag.startY;
+      if (Math.hypot(dx, dy) > 4) {
+        drag.moved = true;
+      }
+      const rect = viewportRef.current.getBoundingClientRect();
+      if (rect.width > 0 && rect.height > 0) {
+        setView(
+          clampView(
+            activeView.zoom,
+            drag.startPanX + dx / rect.width,
+            drag.startPanY + dy / rect.height,
+          ),
+        );
+      }
+      return;
+    }
+
     const rect = e.currentTarget.getBoundingClientRect();
     const xFrac = Math.min(0.9999, Math.max(0, (e.clientX - rect.left) / rect.width));
     const yFrac = Math.min(0.9999, Math.max(0, (e.clientY - rect.top) / rect.height));
@@ -200,7 +294,23 @@ export function IndiaGridMap({
     setHover({ i, j, lat, lon });
   };
 
+  const handlePointerUpOrCancel = (e: React.PointerEvent<SVGSVGElement>) => {
+    const drag = dragRef.current;
+    if (drag && drag.pointerId === e.pointerId) {
+      suppressClickRef.current = drag.moved;
+      dragRef.current = null;
+      setIsDragging(false);
+      if (e.currentTarget.hasPointerCapture(e.pointerId)) {
+        e.currentTarget.releasePointerCapture(e.pointerId);
+      }
+    }
+  };
+
   const handleClick = (e: React.MouseEvent<SVGSVGElement>) => {
+    if (suppressClickRef.current) {
+      suppressClickRef.current = false;
+      return;
+    }
     if (!onCellClick) return;
     const rect = e.currentTarget.getBoundingClientRect();
     const xFrac = Math.min(0.9999, Math.max(0, (e.clientX - rect.left) / rect.width));
@@ -234,29 +344,48 @@ export function IndiaGridMap({
         </div>
       )}
 
-      <div className={`relative mx-auto w-full ${compact ? "" : "max-w-[680px]"} aspect-[36/32] overflow-hidden rounded-lg border border-zinc-800 bg-slate-950 shadow-2xl`}>
-        <canvas
-          ref={fieldCanvasRef}
-          width={FIELD_W}
-          height={FIELD_H}
-          className="block h-full w-full"
-          style={{ imageRendering: smoothGrid ? "auto" : "pixelated" }}
-        />
-
-        <canvas
-          ref={streamCanvasRef}
-          width={STREAM_W}
-          height={STREAM_H}
-          className="pointer-events-none absolute inset-0 h-full w-full"
-        />
-
-        <svg
-          viewBox={`0 0 ${SVG_W} ${SVG_H}`}
-          className={`absolute inset-0 h-full w-full select-none ${onCellClick ? "cursor-pointer" : "cursor-crosshair"}`}
-          onPointerMove={handlePointerMove}
-          onPointerLeave={() => setHover(null)}
-          onClick={handleClick}
+      <div
+        ref={viewportRef}
+        className={`relative mx-auto w-full ${compact ? "" : "max-w-[680px]"} aspect-[36/32] overflow-hidden rounded-lg border border-zinc-800 bg-slate-950 shadow-2xl`}
+      >
+        <div
+          className={`relative h-full w-full ${isDragging ? "" : "transition-transform duration-150 ease-out"}`}
+          style={{
+            transform: `translate(${activeView.panX * 100}%, ${activeView.panY * 100}%) scale(${activeView.zoom})`,
+            transformOrigin: "center center",
+          }}
         >
+          <canvas
+            ref={fieldCanvasRef}
+            width={FIELD_W}
+            height={FIELD_H}
+            className="block h-full w-full"
+            style={{ imageRendering: smoothGrid ? "auto" : "pixelated" }}
+          />
+
+          <canvas
+            ref={streamCanvasRef}
+            width={STREAM_W}
+            height={STREAM_H}
+            className="pointer-events-none absolute inset-0 h-full w-full"
+          />
+
+          <svg
+            viewBox={`0 0 ${SVG_W} ${SVG_H}`}
+            className={`absolute inset-0 h-full w-full select-none ${
+              activeView.zoom > 1
+                ? `touch-none ${isDragging ? "cursor-grabbing" : "cursor-grab"}`
+                : onCellClick
+                  ? "cursor-pointer"
+                  : "cursor-crosshair"
+            }`}
+            onPointerDown={handlePointerDown}
+            onPointerMove={handlePointerMove}
+            onPointerUp={handlePointerUpOrCancel}
+            onPointerCancel={handlePointerUpOrCancel}
+            onPointerLeave={() => setHover(null)}
+            onClick={handleClick}
+          >
           {[10, 20, 30].map((lat) => {
             const y = latToY(lat);
             return (
@@ -469,7 +598,48 @@ export function IndiaGridMap({
               strokeWidth={1.2}
             />
           )}
-        </svg>
+            </svg>
+        </div>
+
+        {/* Bottom-right Zoom Controls */}
+        <div
+          className="absolute bottom-2.5 right-2.5 z-10 flex flex-col items-end gap-1"
+          onPointerDown={(e) => e.stopPropagation()}
+          onClick={(e) => e.stopPropagation()}
+        >
+          {activeView.zoom > 1 && (
+            <button
+              type="button"
+              aria-label="Reset zoom"
+              onClick={resetZoom}
+              className="flex items-center gap-1 rounded-md border border-zinc-700/80 bg-black/85 px-1.5 py-0.5 font-mono text-[10px] tabular-nums text-zinc-200 shadow-lg backdrop-blur-md transition hover:bg-zinc-900"
+            >
+              <span>{activeView.zoom.toFixed(1)}×</span>
+              <RotateCcw className="h-2.5 w-2.5" />
+            </button>
+          )}
+          <div className="flex flex-col overflow-hidden rounded-md border border-zinc-700/80 bg-black/85 shadow-lg backdrop-blur-md">
+            <button
+              type="button"
+              aria-label="Zoom in"
+              disabled={activeView.zoom >= MAX_ZOOM}
+              onClick={() => zoomBy(ZOOM_STEP)}
+              className="flex h-7 w-7 items-center justify-center text-zinc-200 transition hover:bg-zinc-900 disabled:cursor-not-allowed disabled:opacity-35"
+            >
+              <Plus className="h-3.5 w-3.5" />
+            </button>
+            <div className="h-px w-full bg-zinc-800" />
+            <button
+              type="button"
+              aria-label="Zoom out"
+              disabled={activeView.zoom <= MIN_ZOOM}
+              onClick={() => zoomBy(-ZOOM_STEP)}
+              className="flex h-7 w-7 items-center justify-center text-zinc-200 transition hover:bg-zinc-900 disabled:cursor-not-allowed disabled:opacity-35"
+            >
+              <Minus className="h-3.5 w-3.5" />
+            </button>
+          </div>
+        </div>
 
         {hover && (
           <div className="pointer-events-none absolute top-2 right-2 rounded-lg border border-zinc-700/80 bg-black/88 px-2.5 py-1.5 text-[10px] shadow-2xl backdrop-blur-md">

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Columns3, Maximize2, RefreshCw } from "lucide-react";
 import { DayScrubber } from "./components/DayScrubber";
-import { IndiaGridMap } from "./components/IndiaGridMap";
+import { DEFAULT_MAP_VIEW, IndiaGridMap, type MapViewState } from "./components/IndiaGridMap";
 import { ShockBuilder } from "./components/ShockBuilder";
 import { TelemetryImpactPanel } from "./components/TelemetryImpactPanel";
 import {
@@ -72,6 +72,7 @@ export default function App() {
   const [showBoxes, setShowBoxes] = useState<boolean>(true);
   const [showCities, setShowCities] = useState<boolean>(true);
   const [showStates, setShowStates] = useState<boolean>(true);
+  const [mapView, setMapView] = useState<MapViewState>(DEFAULT_MAP_VIEW);
 
   const [shockPreset, setShockPreset] = useState<ShockPreset>("none");
   const [customShock, setCustomShock] = useState<CustomShockConfig>({
@@ -431,6 +432,8 @@ export default function App() {
               showStates={showStates}
               highlightBox={highlightBox}
               customCenter={customRing}
+              view={mapView}
+              onViewChange={setMapView}
               onCellClick={handleMapClick}
               title={
                 shockPreset !== "none"
@@ -453,6 +456,8 @@ export default function App() {
                 showBoxes={showBoxes}
                 showCities={showCities}
                 showStates={showStates}
+                view={mapView}
+                onViewChange={setMapView}
                 onCellClick={handleMapClick}
                 title="Timeline Prime"
                 subtitle="Unperturbed baseline"
@@ -469,6 +474,8 @@ export default function App() {
                 showStates={showStates}
                 highlightBox={highlightBox}
                 customCenter={customRing}
+                view={mapView}
+                onViewChange={setMapView}
                 onCellClick={handleMapClick}
                 title={`Branched · ${SHOCK_PRESET_META[shockPreset].short}`}
                 subtitle="Perturbed rollout"
@@ -486,6 +493,8 @@ export default function App() {
                 showStates={showStates}
                 highlightBox={highlightBox}
                 customCenter={customRing}
+                view={mapView}
+                onViewChange={setMapView}
                 onCellClick={handleMapClick}
                 title="Delta (Shocked − Prime)"
                 subtitle="Causal plume propagation"
