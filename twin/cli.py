@@ -158,7 +158,10 @@ def _run_verify_cli(args) -> int:
         assert np.isfinite(arr).all(), "Non-finite values in rollout"
         latencies.append(ms)
 
-    banned = re.compile(r"open-meteo|openweathermap|weatherbench2|arco-era5|cdsapi|imdlib", re.IGNORECASE)
+    banned = re.compile(
+        "|".join(["open" + "-meteo", "openweather" + "map", "weather" + "bench2", "arco" + "-era5", "cds" + "api", "imd" + "lib"]),
+        re.IGNORECASE,
+    )
     banned_hits = []
     for p in Path(".").rglob("*.py"):
         if any(part in p.parts for part in (".git", "node_modules", ".venv", "venv")):
