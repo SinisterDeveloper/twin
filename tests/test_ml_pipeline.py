@@ -283,7 +283,7 @@ def test_compute_shock_stab_loss_runs_full_horizon():
     sc_seq = torch.tensor([[[0.0, 1.0]] * 4] * 6, dtype=torch.float32)
     doy_tgt = torch.full((6, 4), 180, dtype=torch.long)
 
-    for b_idx in (0, 6):
+    for b_idx in (0, 2):
         m.zero_grad()
         loss = _compute_shock_stab_loss(m, z_in, sc_seq, doy_tgt, clim_tr, anom_std_t, phys_std_t, b_idx, max_samples=2)
         assert torch.isfinite(loss)

@@ -108,8 +108,8 @@ def _compute_shock_stab_loss(
         r0 = int(torch.randint(0, min(19, h - rh + 1), (1,)))
         c0 = int(torch.randint(0, w - cw + 1, (1,)))
 
-    if batch_idx % 8 != 6:
-        # Warm-ocean-like multiplicative moisture + warming shock
+    if batch_idx % 4 == 0:
+        # Warm-ocean-like multiplicative moisture + warming shock (50% of even batches)
         d_t2m = float(2.5 + 1.0 * torch.rand(1))
         frac_tcwv = float(0.14 + 0.06 * torch.rand(1))
         d_tcwv = frac_tcwv * tcwv_sel[:, r0 : r0 + rh, c0 : c0 + cw]

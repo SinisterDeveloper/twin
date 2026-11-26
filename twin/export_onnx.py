@@ -1,6 +1,7 @@
 """Export trained PyTorch checkpoints to ONNX and benchmark CPU rollout speed."""
 from __future__ import annotations
 
+import inspect
 import json
 import os
 import time
@@ -44,16 +45,15 @@ def export_checkpoint_to_onnx(
     sc_dummy = torch.tensor([[0.0, 1.0]], dtype=torch.float32)
 
     onnx_out.parent.mkdir(parents=True, exist_ok=True)
-    torch.onnx.export(
-        model,
-        (z_dummy, sc_dummy),
-        str(onnx_out),
+    export_kwargs = dict(
         input_names=["z_hist", "doy_sc"],
         output_names=["z_next"],
         opset_version=opset,
         do_constant_folding=True,
-        dynamo=False,
     )
+    if "dynamo" in inspect.signature(torch.onnx.export).parameters:
+        export_kwargs["dynamo"] = False
+    torch.onnx.export(model, (z_dummy, sc_dummy), str(onnx_out), **export_kwargs)
 
     import onnxruntime as ort
 
