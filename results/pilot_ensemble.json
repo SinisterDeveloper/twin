@@ -1,0 +1,110 @@
+{
+  "valid_all": true,
+  "windows": 24,
+  "causality_windows": 10,
+  "mean_latency_ms": 157.88,
+  "forecast": {
+    "mean_ss": 0.18601912890638536,
+    "mean_csi_skill": 0.13386328729988675,
+    "rmse_pts": 30.0,
+    "csi_pts": 15.0,
+    "points": 45.0
+  },
+  "channel_ss": {
+    "t2m": 0.1753,
+    "tp": 0.1518,
+    "u10": 0.177,
+    "v10": 0.2077,
+    "msl": 0.1785,
+    "tcwv": 0.2258
+  },
+  "channel_blur_ratio": {
+    "t2m": 0.9682,
+    "tp": 1.0863,
+    "u10": 0.9543,
+    "v10": 0.9427,
+    "msl": 0.9758,
+    "tcwv": 0.985
+  },
+  "anti_blur_pts": 10.0,
+  "causality_pts": 13.5,
+  "null_ok": true,
+  "all_shocks_pass": false,
+  "worst_near_frac_day1": 0.9545,
+  "worst_far_frac_max": 0.0298,
+  "shocks": [
+    {
+      "window_date": "2019-04-30",
+      "shock": "warm_ocean",
+      "finite": true,
+      "nonzero": true,
+      "stable": true,
+      "near_frac_day1": 0.9898255467414856,
+      "localized": true,
+      "far_frac_max": 0.003961786162108183,
+      "no_teleport": true,
+      "propagates": true
+    },
+    {
+      "window_date": "2019-04-30",
+      "shock": "monsoon_stall",
+      "finite": true,
+      "nonzero": true,
+      "stable": true,
+      "near_frac_day1": 0.9841716885566711,
+      "localized": true,
+      "far_frac_max": 0.010376519523561,
+      "no_teleport": true,
+      "propagates": true
+    },
+    {
+      "window_date": "2019-05-28",
+      "shock": "warm_ocean",
+      "finite": true,
+      "nonzero": true,
+      "stable": true,
+      "near_frac_day1": 0.9897651672363281,
+      "localized": true,
+      "far_frac_max": 0.003224239218980074,
+      "no_teleport": true,
+      "propagates": true
+    },
+    {
+      "window_date": "2019-05-28",
+      "shock": "monsoon_stall",
+      "finite": true,
+      "nonzero": true,
+      "stable": true,
+      "near_frac_day1": 0.9872709512710571,
+      "localized": true,
+      "far_frac_max": 0.007843168452382088,
+      "no_teleport": true,
+      "propagates": false
+    },
+    {
+      "window_date": "2019-08-05",
+      "shock": "warm_ocean",
+      "finite": true,
+      "nonzero": true,
+      "stable": false,
+      "near_frac_day1": 0.9747530817985535,
+      "localized": true,
+      "far_frac_max": 0.0005405817646533251,
+      "no_teleport": true,
+      "propagates": true
+    },
+    {
+      "window_date": "2019-08-05",
+      "shock": "monsoon_stall",
+      "finite": true,
+      "nonzero": true,
+      "stable": true,
+      "near_frac_day1": 0.9837167263031006,
+      "localized": true,
+      "far_frac_max": 0.00887137558311224,
+      "no_teleport": true,
+      "propagates": false
+    }
+  ],
+  "automated_score_of_70": 68.5
+}
