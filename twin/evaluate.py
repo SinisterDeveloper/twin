@@ -129,8 +129,14 @@ def _rollout_with_runners(
     x_tr = transform_physical(x)
     z_hist = ((x_tr - clim_tr[doy_hist]) / anom_std[None, :, None, None]).astype(np.float32)
 
+    use_weights = weights is not None and len(runners) == weights.shape[0]
+    active_idx = [i for i in range(len(runners)) if not use_weights or float(np.max(weights[i])) > 1e-8]
+    if not active_idx:
+        active_idx = list(range(len(runners)))
+
     all_rollouts = []
-    for kind, runner in runners:
+    for i in active_idx:
+        kind, runner = runners[i]
         zh = z_hist.copy()
         s_v, c_v = float(doy_sc[0]), float(doy_sc[1])
         preds_phys = []
@@ -150,8 +156,10 @@ def _rollout_with_runners(
         all_rollouts.append(np.stack(preds_phys, axis=0))
 
     stacked = np.stack(all_rollouts, axis=0).astype(np.float32)  # [M, S, 6, 32, 36]
-    if weights is not None and stacked.shape[0] == weights.shape[0]:
-        ens = np.sum(stacked * weights[:, None, :, None, None], axis=0).astype(np.float32)
+    if use_weights:
+        w_act = weights[active_idx]
+        w_act = w_act / np.maximum(w_act.sum(axis=0, keepdims=True), 1e-8)
+        ens = np.sum(stacked * w_act[:, None, :, None, None], axis=0).astype(np.float32)
     else:
         ens = np.mean(stacked, axis=0).astype(np.float32)
     ens[:, 1] = np.maximum(ens[:, 1], 0.0)

@@ -228,6 +228,117 @@ def _run_verify_cli(args) -> int:
     return 0 if (latency_ok and valid_ok and null_ok and anti_cheat_ok) else 1
 
 
+def _event_metrics(arr: np.ndarray) -> dict:
+    wind = np.sqrt(arr[:, 2] ** 2 + arr[:, 3] ** 2)
+    return {
+        "t2m_mean_K": round(float(arr[:, 0].mean()), 2),
+        "tp_mean_mm": round(float(arr[:, 1].mean()), 3),
+        "tp_max_mm": round(float(arr[:, 1].max()), 2),
+        "wind_max_ms": round(float(wind.max()), 2),
+        "msl_min_hpa": round(float(arr[:, 4].min() / 100.0), 2),
+        "tcwv_mean_kgm2": round(float(arr[:, 5].mean()), 2),
+    }
+
+
+def _run_eval_live_cli(args) -> int:
+    from .contract import LEAD_DAYS
+    from .data import date_to_doy365, load_netcdf
+    from .evaluate import evaluate_predictor, select_regime_windows
+    from .scoring import csi, csi_skill, skill_vs_best_ref
+
+    url = args.url.rstrip("/")
+    health, h_ms = _http_json(f"{url}/health", method="POST")
+    http_lats: list[float] = []
+
+    def http_predict(init_states: np.ndarray, sc: list[float], steps: int, pert: np.ndarray | None) -> np.ndarray:
+        payload = {
+            "init_states": _wire_encode(init_states, args.wire),
+            "doy_sincos": [float(sc[0]), float(sc[1])],
+            "steps": int(steps),
+            "perturbation": _wire_encode(pert, args.wire) if pert is not None else None,
+        }
+        resp, ms = _http_json(f"{url}/simulate", payload, timeout=60.0)
+        http_lats.append(ms)
+        return _decode_arr(resp["rollout"] if "rollout" in resp else resp["states"])
+
+    res = evaluate_predictor(
+        args.nc,
+        args.artifacts_dir,
+        http_predict,
+        val_start=args.start_date,
+        val_end=args.end_date,
+        n_causality_windows=args.causality_windows,
+    )
+
+    # Physical event consistency check on sampled regime windows
+    data, dates, _ = load_netcdf(args.nc)
+    raw_clim = np.load(args.artifacts_dir / "raw_clim.npy")
+    windows = select_regime_windows(data, dates, start_date=args.start_date, end_date=args.end_date, per_regime=args.per_regime)
+    lead_idx = [d - 1 for d in LEAD_DAYS]
+    sample_pos = np.linspace(0, len(windows) - 1, min(len(windows), 8), dtype=int)
+    events = []
+    for p_i in sample_pos:
+        idx = windows[int(p_i)]
+        init_states = data[idx - T_IN + 1 : idx + 1]
+        true_roll = data[idx + 1 : idx + 1 + SCORE_STEPS]
+        sc = doy_sincos(date_to_doy365(dates[idx]) + 1)
+        pred_roll = http_predict(init_states, sc, SCORE_STEPS, None)
+        persist = np.repeat(init_states[-1][None], SCORE_STEPS, axis=0)
+        clim_roll = np.stack([raw_clim[(date_to_doy365(dates[idx]) + k + 1) % 365] for k in range(SCORE_STEPS)], axis=0)
+        sk = skill_vs_best_ref(pred_roll[lead_idx], true_roll[lead_idx], persist[lead_idx], clim_roll[lead_idx])
+        c_ss = csi_skill(
+            csi(pred_roll[lead_idx, 1], true_roll[lead_idx, 1]),
+            csi(persist[lead_idx, 1], true_roll[lead_idx, 1]),
+            csi(clim_roll[lead_idx, 1], true_roll[lead_idx, 1]),
+        )
+        events.append(
+            {
+                "init_date": dates[idx].isoformat(),
+                "mean_ss": round(float(np.nanmean(sk["ss"])), 4),
+                "tp_ss": round(float(sk["ss"][1]), 4),
+                "csi_skill": round(float(c_ss), 4),
+                "pred": _event_metrics(pred_roll),
+                "actual": _event_metrics(true_roll),
+            }
+        )
+
+    max_http_s = max(http_lats) / 1000.0 if http_lats else 0.0
+    mean_http_s = (sum(http_lats) / len(http_lats)) / 1000.0 if http_lats else 0.0
+    out_obj = {
+        "health": health,
+        "health_ms": round(h_ms, 2),
+        "start_date": args.start_date,
+        "end_date": args.end_date,
+        "wire": args.wire,
+        "http_calls": len(http_lats),
+        "http_max_latency_s": round(max_http_s, 3),
+        "http_mean_latency_s": round(mean_http_s, 3),
+        **res,
+        "events": events,
+    }
+    txt = json.dumps(out_obj, indent=2)
+    if args.out:
+        args.out.parent.mkdir(parents=True, exist_ok=True)
+        args.out.write_text(txt)
+    print(
+        f"EVAL-LIVE | model={health.get('model_name')} | windows={res['windows']} | "
+        f"score={res['automated_score_of_70']}/70 | mean_ss={res['forecast']['mean_ss']:.4f} | "
+        f"csi_ss={res['forecast']['mean_csi_skill']:.4f} | blur={res['anti_blur_pts']} | "
+        f"caus={res['causality_pts']} | worst_max_z={res['worst_max_z']} | http_max={max_http_s:.3f}s"
+    )
+    print("Channel SS:", json.dumps(res["channel_ss"]))
+    for ev in events:
+        p, a = ev["pred"], ev["actual"]
+        print(
+            f"  {ev['init_date']} | ss={ev['mean_ss']:+.3f} tp_ss={ev['tp_ss']:+.3f} csi={ev['csi_skill']:+.3f} | "
+            f"t2m {p['t2m_mean_K']:.1f}/{a['t2m_mean_K']:.1f}K | tp_mean {p['tp_mean_mm']:.2f}/{a['tp_mean_mm']:.2f} | "
+            f"tp_max {p['tp_max_mm']:.1f}/{a['tp_max_mm']:.1f}mm | wind_max {p['wind_max_ms']:.1f}/{a['wind_max_ms']:.1f}m/s | "
+            f"msl_min {p['msl_min_hpa']:.1f}/{a['msl_min_hpa']:.1f}hPa"
+        )
+    ok = bool(res["valid_all"] and res["null_ok"] and max_http_s <= args.max_latency)
+    return 0 if ok else 1
+
+
 def _smoke_test() -> None:
     import torch
     from .models import build_model
@@ -337,6 +448,18 @@ def main(argv=None) -> int:
     v.add_argument("--days", type=int, default=SCORE_STEPS)
     v.add_argument("--max-latency", type=float, default=5.0)
 
+    el = sp.add_parser("eval-live", help="Evaluate live inference server over HTTP on NetCDF regime windows")
+    el.add_argument("--url", type=str, default="http://localhost:8000")
+    el.add_argument("--nc", type=Path, required=True)
+    el.add_argument("--artifacts-dir", type=Path, default=Path("artifacts"))
+    el.add_argument("--start-date", type=str, default="2023-01-11")
+    el.add_argument("--end-date", type=str, default=None)
+    el.add_argument("--per-regime", type=int, default=5)
+    el.add_argument("--causality-windows", type=int, default=6)
+    el.add_argument("--wire", choices=["lists", "b64"], default="lists")
+    el.add_argument("--max-latency", type=float, default=5.0)
+    el.add_argument("--out", type=Path, default=None)
+
     args = ap.parse_args(argv)
     if args.cmd == "download-data":
         from .data import download_dataset
@@ -419,6 +542,8 @@ def main(argv=None) -> int:
         return _run_simulate_cli(args)
     elif args.cmd == "verify":
         return _run_verify_cli(args)
+    elif args.cmd == "eval-live":
+        return _run_eval_live_cli(args)
     return 0
 
 
