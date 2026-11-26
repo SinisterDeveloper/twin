@@ -32,15 +32,19 @@
 
 ---
 
-## Phase 1 — Automated Verification & Anti-Cheat Suite (Hours 0.5 – 2.0)
+## Phase 1 — Agent-First CLI Pathway & Verification Harness (Hours 0.5 – 2.5)
 
-- [ ] **1.1** Build a single repeatable verification script (e.g. `scripts/verify_submission.py` or `.sh`/`.ps1` — keep clean & outside `serve.py`) that checks:
-  - `GET /health` returns `200` and expected keys.
-  - `POST /simulate` passes `monsoon_r1/schema_validator.py` for `warm_ocean`, `monsoon_stall`, and `null` shocks.
-  - Latency across **8 consecutive 10-day rollout requests** stays `< 5.0 s` per call, with process RSS `< 6 GB`.
-  - Anti-cheat regex scan: zero matches for `open-meteo|openweathermap|weatherbench2|arco-era5|cdsapi|imdlib`.
-  - Repo hygiene: zero `.nc` files tracked by git, total repo size `< 1 GB`, `git lfs ls-files` tracks `*.onnx`.
-- [ ] **Gate 1 Check (Hour 2.0):** Pull Person A's `artifacts/static.npy` & metadata from `main` to lock exact `(32, 36)` lat/lon grid, land-sea mask, and orography for the frontend.
+> **CLI-First Rule:** Build and verify the fast CLI pathway (`twin/cli.py`: `health`, `simulate`, `verify`) **before** building the React `dashboard/` UI so coding agents and developers can test shocks, flags, and JSON outputs immediately.
+
+- [ ] **1.1** Verify & extend the agent-friendly CLI pathway in `twin/cli.py`:
+  - `python -m twin.cli health --url http://localhost:8000 --json`
+  - `python -m twin.cli simulate --url http://localhost:8000 --shock warm_ocean|monsoon_stall|null|custom --shock-lat 15 --shock-lon 72 --shock-radius 2.5 --shock-channel t2m --shock-intensity 2.0 --days 10 --var all --compare-null --json`
+  - `python -m twin.cli verify --url http://localhost:8000 --calls 8 --days 10 --max-latency 5.0`
+- [ ] **1.2** Verify `monsoon_r1/schema_validator.py` and `twin.cli verify` catch:
+  - `/health` and `/simulate` schema conformance.
+  - Latency across **8 consecutive 10-day rollout requests** `< 5.0 s` per call and RSS `< 6 GB`.
+  - Anti-cheat regex scan (zero external weather APIs) and repo hygiene (zero `.nc` files tracked, repo `< 1 GB`, `git lfs ls-files` tracks `*.onnx`).
+- [ ] **Gate 1 Check (Hour 2.5):** Pull Person A's `artifacts/static.npy` & metadata from `main` and confirm `twin.cli simulate --compare-null --json` works end-to-end against `serve.py`.
 
 ---
 

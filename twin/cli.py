@@ -2,17 +2,182 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import json
+import re
+import time
+import urllib.request
 from pathlib import Path
 
 import numpy as np
 
-from .contract import NC, NLAT, NLON, SCORE_STEPS, T_IN, doy_sincos
+from .contract import CHANNELS, NC, NLAT, NLON, SCORE_STEPS, T_IN, doy_sincos
 from .data import download_dataset, prepare_artifacts
 from .evaluate import evaluate_predictor, make_predictor
 from .export_onnx import export_checkpoint_to_onnx
 from .models import build_model
 from .train import run_training
+
+
+def _http_json(url: str, payload: dict | None = None, timeout: float = 30.0) -> tuple[dict, float]:
+    data = json.dumps(payload).encode("utf-8") if payload is not None else None
+    headers = {"Content-Type": "application/json"} if data is not None else {}
+    req = urllib.request.Request(url, data=data, headers=headers, method="POST" if data is not None else "GET")
+    t0 = time.perf_counter()
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        body = json.loads(resp.read().decode("utf-8"))
+    return body, (time.perf_counter() - t0) * 1000.0
+
+
+def _decode_arr(obj) -> np.ndarray:
+    if isinstance(obj, dict) and "b64" in obj:
+        return np.frombuffer(base64.b64decode(obj["b64"]), dtype="<f4").reshape(obj["shape"]).astype(np.float32)
+    return np.asarray(obj, dtype=np.float32)
+
+
+def _encode_arr(arr: np.ndarray) -> dict:
+    a = np.ascontiguousarray(arr, dtype="<f4")
+    return {"b64": base64.b64encode(a.tobytes()).decode("ascii"), "shape": list(a.shape)}
+
+
+def _base_init_states(doy: int, artifacts_dir: Path = Path("artifacts")) -> np.ndarray:
+    clim_p = artifacts_dir / "clim.npy"
+    if clim_p.exists():
+        clim = np.load(clim_p).astype(np.float32)
+        idx = [(doy - 2) % 365, (doy - 1) % 365, doy % 365]
+        x = clim[idx].copy()
+        x[:, 1] = np.expm1(np.maximum(x[:, 1], 0.0))
+        return x
+    x = np.zeros((T_IN, NC, NLAT, NLON), dtype=np.float32)
+    defaults = [298.0, 2.5, 3.0, 2.0, 101000.0, 40.0]
+    for c, v in enumerate(defaults):
+        x[:, c] = v
+    return x
+
+
+def _build_perturbation(args) -> np.ndarray | None:
+    if args.shock in ("none", "null"):
+        return np.zeros((NC, NLAT, NLON), dtype=np.float32) if args.shock == "null" else None
+    if args.shock in ("warm_ocean", "monsoon_stall"):
+        from monsoon_r1.scoring import make_shock
+        return make_shock(args.shock).astype(np.float32)
+    # custom localized Gaussian shock
+    ch = CHANNELS.index(args.shock_channel) if args.shock_channel in CHANNELS else int(args.shock_channel)
+    lat_i = np.clip(args.shock_lat - 6.0, 0.0, float(NLAT - 1))
+    lon_i = np.clip(args.shock_lon - 68.0, 0.0, float(NLON - 1))
+    yy, xx = np.meshgrid(np.arange(NLAT, dtype=np.float32), np.arange(NLON, dtype=np.float32), indexing="ij")
+    r2 = ((yy - lat_i) ** 2 + (xx - lon_i) ** 2) / max(args.shock_radius ** 2, 1e-3)
+    pert = np.zeros((NC, NLAT, NLON), dtype=np.float32)
+    pert[ch] = float(args.shock_intensity) * np.exp(-0.5 * r2)
+    return pert
+
+
+def _run_simulate_cli(args) -> int:
+    url = args.url.rstrip("/")
+    init_states = _base_init_states(args.doy, args.artifacts_dir)
+    sc = list(doy_sincos(np.array([args.doy], dtype=np.int64))[0].astype(float))
+    pert = _build_perturbation(args)
+    payload = {
+        "init_states": _encode_arr(init_states),
+        "doy_sincos": sc,
+        "steps": args.days,
+        "perturbation": _encode_arr(pert) if pert is not None else None,
+    }
+    resp, ms = _http_json(f"{url}/simulate", payload)
+    rollout = _decode_arr(resp["rollout"] if "rollout" in resp else resp["states"])
+
+    delta = None
+    if args.compare_null:
+        base_payload = {
+            "init_states": _encode_arr(init_states),
+            "doy_sincos": sc,
+            "steps": args.days,
+            "perturbation": _encode_arr(np.zeros((NC, NLAT, NLON), dtype=np.float32)),
+        }
+        base_resp, _ = _http_json(f"{url}/simulate", base_payload)
+        base_rollout = _decode_arr(base_resp["rollout"] if "rollout" in base_resp else base_resp["states"])
+        delta = rollout - base_rollout
+
+    ch_indices = range(NC) if args.var == "all" else [CHANNELS.index(args.var)]
+    summary = {
+        "url": url,
+        "shock": args.shock,
+        "days": args.days,
+        "doy": args.doy,
+        "latency_ms": round(ms, 2),
+        "shape": list(rollout.shape),
+        "channels": {
+            CHANNELS[c]: {
+                "min": round(float(rollout[:, c].min()), 4),
+                "mean": round(float(rollout[:, c].mean()), 4),
+                "max": round(float(rollout[:, c].max()), 4),
+                **(
+                    {
+                        "delta_max_abs": round(float(np.abs(delta[:, c]).max()), 6),
+                        "delta_mean_abs": round(float(np.abs(delta[:, c]).mean()), 6),
+                    }
+                    if delta is not None
+                    else {}
+                ),
+            }
+            for c in ch_indices
+        },
+    }
+    txt = json.dumps(summary, indent=2)
+    if args.out:
+        args.out.parent.mkdir(parents=True, exist_ok=True)
+        args.out.write_text(txt)
+    if args.json:
+        print(txt)
+    else:
+        print(f"SIMULATE OK | shock={args.shock} | days={args.days} | latency={ms:.1f}ms | shape={tuple(rollout.shape)}")
+        for name, stats in summary["channels"].items():
+            extra = f" | d_max={stats['delta_max_abs']}" if "delta_max_abs" in stats else ""
+            print(f"  {name:5s} | min={stats['min']:9.3f} | mean={stats['mean']:9.3f} | max={stats['max']:9.3f}{extra}")
+    return 0
+
+
+def _run_verify_cli(args) -> int:
+    url = args.url.rstrip("/")
+    health, h_ms = _http_json(f"{url}/health")
+    latencies = []
+    for shock_name in ("null", "warm_ocean", "monsoon_stall") * ((args.calls + 2) // 3):
+        if len(latencies) >= args.calls:
+            break
+        from monsoon_r1.scoring import make_shock
+        pert = make_shock(shock_name).astype(np.float32)
+        payload = {
+            "init_states": _encode_arr(_base_init_states(180)),
+            "doy_sincos": list(doy_sincos(np.array([180], dtype=np.int64))[0].astype(float)),
+            "steps": args.days,
+            "perturbation": _encode_arr(pert),
+        }
+        resp, ms = _http_json(f"{url}/simulate", payload)
+        arr = _decode_arr(resp["rollout"] if "rollout" in resp else resp["states"])
+        assert arr.shape == (args.days, NC, NLAT, NLON), f"Bad rollout shape {arr.shape}"
+        assert np.isfinite(arr).all(), "Non-finite values in rollout"
+        latencies.append(ms)
+
+    banned = re.compile(r"open-meteo|openweathermap|weatherbench2|arco-era5|cdsapi|imdlib", re.IGNORECASE)
+    banned_hits = []
+    for p in Path(".").rglob("*.py"):
+        if any(part in p.parts for part in (".git", "node_modules", ".venv", "venv")):
+            continue
+        if banned.search(p.read_text(errors="ignore")):
+            banned_hits.append(str(p))
+
+    report = {
+        "health": health,
+        "health_ms": round(h_ms, 2),
+        "calls": len(latencies),
+        "max_latency_s": round(max(latencies) / 1000.0, 3),
+        "mean_latency_s": round((sum(latencies) / len(latencies)) / 1000.0, 3),
+        "latency_ok": max(latencies) / 1000.0 <= args.max_latency,
+        "banned_hits": banned_hits,
+        "anti_cheat_ok": len(banned_hits) == 0,
+    }
+    print(json.dumps(report, indent=2))
+    return 0 if (report["latency_ok"] and report["anti_cheat_ok"]) else 1
 
 
 def _smoke_test() -> None:
@@ -77,6 +242,32 @@ def main(argv=None) -> int:
 
     sp.add_parser("smoke-test", help="Verify both model architectures on synthetic tensors")
 
+    h = sp.add_parser("health", help="Check live /health endpoint on inference server")
+    h.add_argument("--url", type=str, default="http://localhost:8000")
+    h.add_argument("--json", action="store_true")
+
+    s = sp.add_parser("simulate", help="Fast CLI pathway to run /simulate with custom shocks & flags")
+    s.add_argument("--url", type=str, default="http://localhost:8000")
+    s.add_argument("--artifacts-dir", type=Path, default=Path("artifacts"))
+    s.add_argument("--shock", choices=["none", "null", "warm_ocean", "monsoon_stall", "custom"], default="null")
+    s.add_argument("--shock-channel", type=str, default="t2m")
+    s.add_argument("--shock-lat", type=float, default=15.0)
+    s.add_argument("--shock-lon", type=float, default=72.0)
+    s.add_argument("--shock-radius", type=float, default=2.5)
+    s.add_argument("--shock-intensity", type=float, default=2.0)
+    s.add_argument("--days", type=int, default=SCORE_STEPS)
+    s.add_argument("--doy", type=int, default=180)
+    s.add_argument("--var", choices=["all", *CHANNELS], default="all")
+    s.add_argument("--compare-null", action="store_true", help="Also run null shock and report delta magnitudes")
+    s.add_argument("--json", action="store_true", help="Emit machine-readable JSON for agents")
+    s.add_argument("--out", type=Path, default=None)
+
+    v = sp.add_parser("verify", help="Run automated Round-1 contract, latency, and anti-cheat checks")
+    v.add_argument("--url", type=str, default="http://localhost:8000")
+    v.add_argument("--calls", type=int, default=8)
+    v.add_argument("--days", type=int, default=SCORE_STEPS)
+    v.add_argument("--max-latency", type=float, default=5.0)
+
     args = ap.parse_args(argv)
     if args.cmd == "download-data":
         nc, st = download_dataset(args.data_dir, force=args.force)
@@ -118,6 +309,16 @@ def main(argv=None) -> int:
         export_checkpoint_to_onnx(args.ckpt, args.static, args.out)
     elif args.cmd == "smoke-test":
         _smoke_test()
+    elif args.cmd == "health":
+        resp, ms = _http_json(f"{args.url.rstrip('/')}/health")
+        if args.json:
+            print(json.dumps({"latency_ms": round(ms, 2), **resp}, indent=2))
+        else:
+            print(f"HEALTH OK ({ms:.1f}ms) | {resp}")
+    elif args.cmd == "simulate":
+        return _run_simulate_cli(args)
+    elif args.cmd == "verify":
+        return _run_verify_cli(args)
     return 0
 
 

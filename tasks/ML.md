@@ -47,7 +47,7 @@
   ```bash
   python -m twin.cli prepare-artifacts --nc data/india_climate_train.nc --artifacts-dir artifacts --train-end 2018-12-31
   ```
-- [ ] **1.4** Verify generated shapes in `artifacts/` (`clim_4harm.npz`, `norm_stats.npz`, `static.npy`) match `(32, 36)` and 6 dynamic + 2 static channels.
+- [ ] **1.4** Verify generated shapes in `artifacts/` (`clim.npy`, `norm_stats.json`, `static.npy`) match `(32, 36)` and 6 dynamic + 2 static channels.
 - [ ] **Gate 1 Check:** Push `artifacts/` (small `.npz`/`.npy`) to `origin/main` so SW (`dashboard/` coastline/orography & mock/smoke tests) has exact `static.npy` and normalization metadata.
 
 ---
@@ -97,7 +97,7 @@
   python -m twin.cli export-onnx --ckpt checkpoints/convnext_final.pt --static artifacts/static.npy --out artifacts/convnext_unet.onnx
   python -m twin.cli export-onnx --ckpt checkpoints/advect_final.pt --static artifacts/static.npy --out artifacts/advect_resnet.onnx
   ```
-- [ ] **Gate 3 Check (Hour 10.0):** Push final `artifacts/*.onnx` + `artifacts/*.npz` + `artifacts/static.npy` (via Git LFS) and `results/ensemble_val.json` to `origin/main`. Hand off to Person B for SW integration & dashboard wiring.
+- [ ] **Gate 3 Check (Hour 10.0):** Push final `artifacts/*.onnx` + `artifacts/clim.npy` + `artifacts/norm_stats.json` + `artifacts/static.npy` (via Git LFS) and `results/ensemble_val.json` to `origin/main`. Hand off to Person B for SW integration & dashboard wiring.
 
 ---
 
