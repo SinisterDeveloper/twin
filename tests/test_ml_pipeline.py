@@ -336,3 +336,47 @@ def test_anti_cheat_hygiene():
     assert not hits, f"Banned weather API strings found in: {hits}"
     gitignore = (root / ".gitignore").read_text(errors="ignore")
     assert "*.nc" in gitignore
+
+
+def test_serve_ensemble_weights_skip_disabled(tmp_path, monkeypatch):
+    import json as _json
+    import serve
+
+    class _CountingSess:
+        def __init__(self, val: float):
+            self.val = val
+            self.calls = 0
+
+        def run(self, *_args, **_kwargs):
+            self.calls += 1
+            return [np.full((1, NC, NLAT, NLON), self.val, dtype=np.float32)]
+
+    s_keep = _CountingSess(290.0)
+    s_zero = _CountingSess(330.0)
+    monkeypatch.setattr(serve, "_SESSIONS", [s_keep, s_zero])
+    monkeypatch.setattr(serve, "_SESSION_WEIGHTS", np.array([[1.0] * NC, [0.0] * NC], dtype=np.float32))
+    monkeypatch.setattr(serve, "_CLIM", np.zeros((365, NC, NLAT, NLON), dtype=np.float32))
+    monkeypatch.setattr(serve, "_ANOM_STD", np.ones(NC, dtype=np.float32))
+
+    init = np.zeros((T_IN, NC, NLAT, NLON), dtype=np.float32)
+    init[:, 0] = 300.0
+    out = serve.simulate(init, [0.0, 1.0], 2, None)
+    assert s_keep.calls == 2
+    assert s_zero.calls == 0
+    assert np.allclose(out[:, 0], 290.0)
+
+    w_file = tmp_path / "ensemble_weights.json"
+    w_file.write_text(_json.dumps({"convnext_unet": [0.7] * NC, "local_swin": [0.0] * NC}))
+    from twin.evaluate import _load_ensemble_weights
+
+    w = _load_ensemble_weights(w_file, ["convnext_unet", "local_swin"])
+    assert np.allclose(w[0], 1.0)
+    assert np.allclose(w[1], 0.0)
+
+
+def test_cli_eval_live_parser():
+    from twin.cli import main
+
+    with pytest.raises(SystemExit) as exc:
+        main(["eval-live", "--help"])
+    assert exc.value.code == 0

@@ -129,8 +129,14 @@ def _rollout_with_runners(
     x_tr = transform_physical(x)
     z_hist = ((x_tr - clim_tr[doy_hist]) / anom_std[None, :, None, None]).astype(np.float32)
 
+    use_weights = weights is not None and len(runners) == weights.shape[0]
+    active_idx = [i for i in range(len(runners)) if not use_weights or float(np.max(weights[i])) > 1e-8]
+    if not active_idx:
+        active_idx = list(range(len(runners)))
+
     all_rollouts = []
-    for kind, runner in runners:
+    for i in active_idx:
+        kind, runner = runners[i]
         zh = z_hist.copy()
         s_v, c_v = float(doy_sc[0]), float(doy_sc[1])
         preds_phys = []
@@ -150,8 +156,10 @@ def _rollout_with_runners(
         all_rollouts.append(np.stack(preds_phys, axis=0))
 
     stacked = np.stack(all_rollouts, axis=0).astype(np.float32)  # [M, S, 6, 32, 36]
-    if weights is not None and stacked.shape[0] == weights.shape[0]:
-        ens = np.sum(stacked * weights[:, None, :, None, None], axis=0).astype(np.float32)
+    if use_weights:
+        w_act = weights[active_idx]
+        w_act = w_act / np.maximum(w_act.sum(axis=0, keepdims=True), 1e-8)
+        ens = np.sum(stacked * w_act[:, None, :, None, None], axis=0).astype(np.float32)
     else:
         ens = np.mean(stacked, axis=0).astype(np.float32)
     ens[:, 1] = np.maximum(ens[:, 1], 0.0)
@@ -421,7 +429,9 @@ def fit_ensemble_weights(
                 shock_res.append(causality_checks(b, sh, box, phys_std))
         c_pts = causality_points(shock_res, null_ok)
         tot = f_pts["points"] + b_pts + c_pts
-        return tot, f_pts["points"], b_pts, c_pts
+        raw_skill = float(np.mean(ss_l) + 0.5 * np.mean(csi_l)) if ss_l and csi_l else 0.0
+        worst_z = float(max((r.get("max_z", 0.0) for r in shock_res), default=0.0))
+        return tot, f_pts["points"], b_pts, c_pts, raw_skill, worst_z
 
     rng = np.random.default_rng(seed)
     best_w = np.full((m_cnt, NC), 1.0 / m_cnt, dtype=np.float32)
@@ -435,14 +445,18 @@ def fit_ensemble_weights(
         c = np.stack([rng.dirichlet(np.ones(m_cnt) * 2.0) for _ in range(NC)], axis=1).astype(np.float32)
         candidates.append(c)
 
+    def _rank_key(m_val: tuple) -> tuple:
+        feasible = int(m_val[2] >= 9.95 and m_val[3] >= 14.95 and m_val[5] < 5.0)
+        return (feasible, round(m_val[0], 2), round(m_val[4], 6), -round(m_val[5], 4))
+
+    best_key = _rank_key(best_metrics)
     for w_cand in candidates:
         m_val = _score_weights(w_cand)
-        # Prefer full anti-blur + causality before raw points
-        feasible = m_val[2] >= 9.95 and m_val[3] >= 14.95
-        best_feasible = best_metrics[2] >= 9.95 and best_metrics[3] >= 14.95
-        if (feasible and not best_feasible) or ((feasible == best_feasible) and m_val[0] > best_metrics[0]):
+        cand_key = _rank_key(m_val)
+        if cand_key > best_key:
             best_w = w_cand
             best_metrics = m_val
+            best_key = cand_key
 
     mapping = {model_names[i]: [round(float(x), 4) for x in best_w[i]] for i in range(m_cnt)}
     if out_path is not None:

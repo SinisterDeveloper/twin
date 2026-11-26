@@ -112,8 +112,18 @@ def simulate(init_states: np.ndarray, doy_sincos: list[float], steps: int, pertu
 
     z_hist = ((_transform_phys(x) - _CLIM[doy_hist]) / _ANOM_STD[None, :, None, None]).astype(np.float32)
 
+    use_weights = _SESSION_WEIGHTS is not None and len(_SESSIONS) == _SESSION_WEIGHTS.shape[0]
+    active_idx = [
+        i
+        for i in range(len(_SESSIONS))
+        if not use_weights or float(np.max(_SESSION_WEIGHTS[i])) > 1e-8
+    ]
+    if not active_idx:
+        active_idx = list(range(len(_SESSIONS)))
+
     all_rollouts = []
-    for sess in _SESSIONS:
+    for i in active_idx:
+        sess = _SESSIONS[i]
         zh = z_hist.copy()
         sv, cv = s_v, c_v
         preds = []
@@ -128,8 +138,10 @@ def simulate(init_states: np.ndarray, doy_sincos: list[float], steps: int, pertu
         all_rollouts.append(np.stack(preds, axis=0))
 
     stacked = np.stack(all_rollouts, axis=0).astype(np.float32)
-    if _SESSION_WEIGHTS is not None and stacked.shape[0] == _SESSION_WEIGHTS.shape[0]:
-        ens = np.sum(stacked * _SESSION_WEIGHTS[:, None, :, None, None], axis=0).astype(np.float32)
+    if use_weights:
+        w_act = _SESSION_WEIGHTS[active_idx]
+        w_act = w_act / np.maximum(w_act.sum(axis=0, keepdims=True), 1e-8)
+        ens = np.sum(stacked * w_act[:, None, :, None, None], axis=0).astype(np.float32)
     else:
         ens = np.mean(stacked, axis=0).astype(np.float32)
     ens[:, 1] = np.maximum(ens[:, 1], 0.0)
