@@ -368,7 +368,7 @@ export function IndiaGridMap({
   const unitLabel = isDelta && channel === "t2m" ? (useCelsius ? "°C" : "K") : meta.displayUnit(useCelsius);
 
   return (
-    <div className={`flex flex-col rounded-xl border border-zinc-900 bg-zinc-950/60 ${compact ? "p-2.5" : "p-3"}`}>
+    <div className={`flex flex-col rounded-lg border border-zinc-900 bg-black ${compact ? "p-2.5" : "p-3"}`}>
       {(title || subtitle) && (
         <div className="mb-2 flex items-baseline justify-between gap-2 px-0.5">
           <h3 className={`truncate font-medium tracking-tight text-zinc-100 ${compact ? "text-xs" : "text-[13px]"}`}>
@@ -382,7 +382,7 @@ export function IndiaGridMap({
 
       <div
         ref={viewportRef}
-        className={`relative mx-auto w-full ${compact ? "" : "max-w-[700px]"} aspect-[36/32] overflow-hidden rounded-lg border border-zinc-800/80 bg-slate-950 shadow-2xl`}
+        className={`relative mx-auto w-full ${compact ? "" : "max-w-[700px]"} aspect-[36/32] overflow-hidden rounded-lg border border-zinc-800/80 bg-slate-950`}
       >
         <div
           className={`relative h-full w-full ${animateTransform && !isDragging ? "transition-transform duration-150 ease-out" : ""}`}

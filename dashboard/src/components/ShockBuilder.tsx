@@ -1,4 +1,3 @@
-import { Play } from "lucide-react";
 import { CHANNELS, CHANNEL_META, type ChannelKey } from "../lib/contract";
 import {
   customIntensitySpec,
@@ -13,7 +12,6 @@ interface ShockBuilderProps {
   loading: boolean;
   onChangePreset: (p: ShockPreset) => void;
   onChangeCustom: (c: CustomShockConfig) => void;
-  onRunBranch: () => void;
 }
 
 const PRESET_ORDER: ShockPreset[] = ["none", "null", "warm_ocean", "monsoon_stall", "custom"];
@@ -24,7 +22,6 @@ export function ShockBuilder({
   loading,
   onChangePreset,
   onChangeCustom,
-  onRunBranch,
 }: ShockBuilderProps) {
   const meta = SHOCK_PRESET_META[preset];
   const spec = customIntensitySpec(custom.channel);
@@ -33,10 +30,10 @@ export function ShockBuilder({
     <section className="flex flex-col gap-2.5">
       <div className="flex items-center justify-between">
         <span className="text-[11px] font-medium uppercase tracking-wider text-zinc-500">
-          Shock Scenario
+          Shock
         </span>
-        {preset !== "none" && (
-          <span className="font-mono text-[10px] text-amber-300">{meta.short}</span>
+        {loading && (
+          <span className="font-mono text-[10px] text-zinc-500">Running...</span>
         )}
       </div>
 
@@ -54,7 +51,7 @@ export function ShockBuilder({
               } ${
                 active
                   ? "border-white bg-white text-black"
-                  : "border-zinc-900 bg-zinc-950 text-zinc-300 hover:border-zinc-700 hover:text-zinc-100"
+                  : "border-zinc-900 bg-black text-zinc-300 hover:border-zinc-700 hover:text-zinc-100"
               }`}
             >
               {m.short}
@@ -87,7 +84,7 @@ export function ShockBuilder({
                     className={`rounded border py-1 font-mono text-[11px] transition ${
                       active
                         ? "border-white bg-white font-semibold text-black"
-                        : "border-zinc-900 bg-zinc-950 text-zinc-400 hover:border-zinc-700 hover:text-zinc-200"
+                        : "border-zinc-900 bg-black text-zinc-400 hover:border-zinc-700 hover:text-zinc-200"
                     }`}
                   >
                     {c}
@@ -97,9 +94,9 @@ export function ShockBuilder({
             </div>
           </div>
 
-          <div className="flex items-center justify-between rounded-md border border-zinc-900 bg-zinc-950 px-2.5 py-1.5 font-mono text-[11px] tabular-nums">
+          <div className="flex items-center justify-between rounded-md border border-zinc-900 bg-black px-2.5 py-1.5 font-mono text-[11px] tabular-nums">
             <span className="text-zinc-500">Center (click map)</span>
-            <span className="text-amber-300">
+            <span className="text-zinc-200">
               {custom.lat.toFixed(1)}°N, {custom.lon.toFixed(1)}°E
             </span>
           </div>
@@ -144,20 +141,6 @@ export function ShockBuilder({
           </div>
         </div>
       )}
-
-      <button
-        type="button"
-        disabled={loading}
-        onClick={onRunBranch}
-        className="mt-0.5 flex h-8 w-full items-center justify-center gap-1.5 rounded-md bg-white px-3 text-xs font-medium text-black transition hover:bg-zinc-200 disabled:opacity-50"
-      >
-        <Play className="h-3 w-3 fill-current" />
-        {loading
-          ? "Simulating..."
-          : preset === "none"
-            ? "Run Timeline Prime"
-            : "Run Branch Comparison"}
-      </button>
     </section>
   );
 }
