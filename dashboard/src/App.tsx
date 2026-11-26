@@ -71,6 +71,7 @@ export default function App() {
   const [smoothGrid, setSmoothGrid] = useState<boolean>(true);
   const [showBoxes, setShowBoxes] = useState<boolean>(true);
   const [showCities, setShowCities] = useState<boolean>(true);
+  const [showStates, setShowStates] = useState<boolean>(true);
 
   const [shockPreset, setShockPreset] = useState<ShockPreset>("none");
   const [customShock, setCustomShock] = useState<CustomShockConfig>({
@@ -323,6 +324,7 @@ export default function App() {
               <SwitchRow label="Wind Streamlines" checked={showVectors} onChange={setShowVectors} />
               <SwitchRow label="Smooth Radar Grid" checked={smoothGrid} onChange={setSmoothGrid} />
               <SwitchRow label="City Labels" checked={showCities} onChange={setShowCities} />
+              <SwitchRow label="State Borders" checked={showStates} onChange={setShowStates} />
               <SwitchRow label="Ocean Boxes" checked={showBoxes} onChange={setShowBoxes} />
             </div>
           </section>
@@ -426,6 +428,7 @@ export default function App() {
               smoothGrid={smoothGrid}
               showBoxes={showBoxes}
               showCities={showCities}
+              showStates={showStates}
               highlightBox={highlightBox}
               customCenter={customRing}
               onCellClick={handleMapClick}
@@ -449,6 +452,7 @@ export default function App() {
                 smoothGrid={smoothGrid}
                 showBoxes={showBoxes}
                 showCities={showCities}
+                showStates={showStates}
                 onCellClick={handleMapClick}
                 title="Timeline Prime"
                 subtitle="Unperturbed baseline"
@@ -462,6 +466,7 @@ export default function App() {
                 smoothGrid={smoothGrid}
                 showBoxes={showBoxes}
                 showCities={showCities}
+                showStates={showStates}
                 highlightBox={highlightBox}
                 customCenter={customRing}
                 onCellClick={handleMapClick}
@@ -478,6 +483,7 @@ export default function App() {
                 smoothGrid={smoothGrid}
                 showBoxes={showBoxes}
                 showCities={showCities}
+                showStates={showStates}
                 highlightBox={highlightBox}
                 customCenter={customRing}
                 onCellClick={handleMapClick}

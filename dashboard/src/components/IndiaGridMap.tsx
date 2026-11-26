@@ -4,7 +4,6 @@ import {
   BOX_BAY_OF_BENGAL,
   CHANNEL_META,
   CHANNELS,
-  INDIA_COAST_POLYLINES,
   LAT,
   LAT_MAX,
   LAT_MIN,
@@ -18,6 +17,7 @@ import {
   type ChannelKey,
   type GeoBox,
 } from "../lib/contract";
+import { INDIA_STATE_PATHS, NEIGHBOR_COUNTRY_PATHS } from "../lib/geo";
 import {
   channelColormap,
   cssLinearGradient,
@@ -34,6 +34,7 @@ interface IndiaGridMapProps {
   smoothGrid: boolean;
   showBoxes: boolean;
   showCities?: boolean;
+  showStates?: boolean;
   mode?: "field" | "delta";
   highlightBox?: GeoBox | null;
   customCenter?: { lat: number; lon: number; radiusDeg: number } | null;
@@ -73,6 +74,7 @@ export function IndiaGridMap({
   smoothGrid,
   showBoxes,
   showCities = true,
+  showStates = true,
   mode = "field",
   highlightBox = null,
   customCenter = null,
@@ -337,32 +339,50 @@ export function IndiaGridMap({
             BAY OF BENGAL
           </text>
 
-          {INDIA_COAST_POLYLINES.map((poly, idx) => {
-            const pts = poly.map(([lo, la]) => `${lonToX(lo).toFixed(1)},${latToY(la).toFixed(1)}`).join(" ");
-            const isBorder = idx === 3;
-            return (
-              <g key={`coast-${idx}`}>
-                <polyline
-                  points={pts}
-                  fill="none"
-                  stroke="rgba(0, 0, 0, 0.7)"
-                  strokeWidth={isBorder ? 1.8 : 2.5}
-                  strokeDasharray={isBorder ? "2.5 2" : undefined}
-                  strokeLinejoin="round"
-                  strokeLinecap="round"
-                />
-                <polyline
-                  points={pts}
-                  fill="none"
-                  stroke={isBorder ? "rgba(255, 255, 255, 0.58)" : "rgba(255, 255, 255, 0.96)"}
-                  strokeWidth={isBorder ? 0.95 : 1.35}
-                  strokeDasharray={isBorder ? "2.5 2" : undefined}
-                  strokeLinejoin="round"
-                  strokeLinecap="round"
-                />
-              </g>
-            );
-          })}
+          {/* Neighboring Countries & Sri Lanka Coastlines (50m Natural Earth) */}
+          {NEIGHBOR_COUNTRY_PATHS.map((country, idx) => (
+            <g key={`nbr-${idx}`}>
+              <path
+                d={country.d}
+                fill="none"
+                stroke="rgba(0, 0, 0, 0.55)"
+                strokeWidth={1.4}
+                strokeLinejoin="round"
+              />
+              <path
+                d={country.d}
+                fill="none"
+                stroke="rgba(255, 255, 255, 0.36)"
+                strokeWidth={0.7}
+                strokeLinejoin="round"
+              />
+            </g>
+          ))}
+
+          {/* Real India Coastline & State Boundaries */}
+          {INDIA_STATE_PATHS.map((st, idx) => (
+            <path
+              key={`state-${idx}`}
+              d={st.d}
+              fill="none"
+              stroke="rgba(0, 0, 0, 0.65)"
+              strokeWidth={showStates ? 1.7 : 1.0}
+              strokeLinejoin="round"
+              strokeLinecap="round"
+            />
+          ))}
+          {showStates &&
+            INDIA_STATE_PATHS.map((st, idx) => (
+              <path
+                key={`state-fg-${idx}`}
+                d={st.d}
+                fill="none"
+                stroke="rgba(255, 255, 255, 0.86)"
+                strokeWidth={0.85}
+                strokeLinejoin="round"
+                strokeLinecap="round"
+              />
+            ))}
 
           {boxes.map((box) => {
             const x = lonToX(box.lon0 - 0.5);
