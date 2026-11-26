@@ -1,23 +1,35 @@
-"""Shared strictly local physics feature extractors and harmonic trig helpers."""
+"""Strictly pointwise ChannelLayerNorm2d and exact spherical physical feature extractors."""
 from __future__ import annotations
 
 import math
 
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from ..contract import LAT, NC, NLAT, NLON
+
 ONE_DAY_RAD = 2.0 * math.pi / 365.0
 
 
-def eval_harmonic_4(doy_sc: torch.Tensor, coef: torch.Tensor, shift_minus_one: bool = True) -> torch.Tensor:
-    """Evaluate 4-harmonic climatology from [sin theta, cos theta] and coef [9, C, H, W].
+class ChannelLayerNorm2d(nn.Module):
+    """Strictly per-pixel LayerNorm along channel axis (dim=1), with zero spatial coupling."""
 
-    Args:
-        doy_sc: [B, 2] containing [sin(2*pi*doy1/365), cos(2*pi*doy1/365)] for target step.
-        coef: [9, C, H, W] fitted with 0-based index (day 0 -> angle 0).
-        shift_minus_one: If True, shifts doy_sc back by 1 day so it matches z_last's calendar day.
-    """
+    def __init__(self, num_channels: int, eps: float = 1e-5):
+        super().__init__()
+        self.weight = nn.Parameter(torch.ones(1, num_channels, 1, 1))
+        self.bias = nn.Parameter(torch.zeros(1, num_channels, 1, 1))
+        self.eps = eps
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        mean = x.mean(dim=1, keepdim=True)
+        var = (x - mean).pow(2).mean(dim=1, keepdim=True)
+        return (x - mean) * torch.rsqrt(var + self.eps) * self.weight + self.bias
+
+
+def eval_harmonic_4(doy_sc: torch.Tensor, coef: torch.Tensor, shift_minus_one: bool = True) -> torch.Tensor:
+    """Evaluate 4-harmonic climatology from [sin theta, cos theta] and coef [9, C, H, W]."""
     s1 = doy_sc[:, 0]
     c1 = doy_sc[:, 1]
     if shift_minus_one:
@@ -36,7 +48,6 @@ def eval_harmonic_4(doy_sc: torch.Tensor, coef: torch.Tensor, shift_minus_one: b
 
     ones = torch.ones_like(s1)
     basis = torch.stack([ones, s1, c1, s2, c2, s3, c3, s4, c4], dim=1)  # [B, 9]
-    # Use explicit reshape + matmul instead of einsum for rock-solid ONNX export
     b = basis.shape[0]
     c, h, w = coef.shape[1], coef.shape[2], coef.shape[3]
     return torch.matmul(basis, coef.reshape(9, c * h * w)).reshape(b, c, h, w)
@@ -63,12 +74,33 @@ def spatial_laplacian(x: torch.Tensor) -> torch.Tensor:
 
 
 class PhysicsFeatureBlock(nn.Module):
-    """Computes 17 strictly local physical tendency and finite-difference channels from z_hist."""
+    """Computes 17 strictly local temporal tendency and spherical physical derivative channels."""
 
     OUT_CHANNELS = 17
 
-    def forward(self, z_hist: torch.Tensor) -> torch.Tensor:
-        """z_hist: [B, 3, 6, H, W] -> [B, 17, H, W]."""
+    def __init__(
+        self,
+        clim_phys_coef: np.ndarray | None = None,
+        anom_std: np.ndarray | None = None,
+    ):
+        super().__init__()
+        if clim_phys_coef is None:
+            clim_phys_coef = np.zeros((9, NC, NLAT, NLON), dtype=np.float32)
+        self.register_buffer("clim_phys_coef", torch.from_numpy(clim_phys_coef.astype(np.float32)))
+
+        if anom_std is None:
+            std_full = np.array([1.7, 0.7, 1.5, 1.4, 280.0, 6.1], dtype=np.float32)
+        else:
+            std_full = np.asarray(anom_std, dtype=np.float32)
+        self.register_buffer("anom_std_full", torch.from_numpy(std_full).view(1, NC, 1, 1))
+
+        cos_lat = np.cos(np.deg2rad(LAT.astype(np.float64))).astype(np.float32)
+        inv_cos_lat = (1.0 / np.maximum(cos_lat, 1e-3)).astype(np.float32)
+        self.register_buffer("cos_lat", torch.from_numpy(cos_lat).view(1, 1, NLAT, 1))
+        self.register_buffer("inv_cos_lat", torch.from_numpy(inv_cos_lat).view(1, 1, NLAT, 1))
+
+    def forward(self, z_hist: torch.Tensor, doy_sc: torch.Tensor) -> torch.Tensor:
+        """z_hist: [B, 3, 6, H, W], doy_sc: [B, 2] -> [B, 17, H, W]."""
         z_t = z_hist[:, -1]
         z_m1 = z_hist[:, -2]
         z_m2 = z_hist[:, -3]
@@ -76,16 +108,28 @@ class PhysicsFeatureBlock(nn.Module):
         dz1 = z_t - z_m1
         dz0 = z_m1 - z_m2
 
-        dx, dy = spatial_grad_central(z_t)
-        dmsl_dx = dx[:, 4:5]
-        dmsl_dy = dy[:, 4:5]
-        div = dx[:, 2:3] + dy[:, 3:4]
-        vort = dx[:, 3:4] - dy[:, 2:3]
+        # Reconstruct true physical u10, v10, msl, tcwv for exact spherical derivatives
+        clim_phys = eval_harmonic_4(doy_sc, self.clim_phys_coef, shift_minus_one=True)
+        phys_t = z_t * self.anom_std_full + clim_phys
+        u = phys_t[:, 2:3]
+        v = phys_t[:, 3:4]
+        msl = phys_t[:, 4:5]
+        tcwv = torch.clamp(phys_t[:, 5:6], min=0.0)
 
-        qu = z_t[:, 5:6] * z_t[:, 2:3]
-        qv = z_t[:, 5:6] * z_t[:, 3:4]
-        dqu_dx, _ = spatial_grad_central(qu)
-        _, dqv_dy = spatial_grad_central(qv)
-        mfc = -(dqu_dx + dqv_dy)
+        dmsl_dx, dmsl_dy = spatial_grad_central(msl)
+        dmsl_dx_s = (dmsl_dx * self.inv_cos_lat) * 0.005
+        dmsl_dy_s = dmsl_dy * 0.005
 
-        return torch.cat([dz1, dz0, dmsl_dx, dmsl_dy, div, vort, mfc], dim=1)
+        du_dx, _ = spatial_grad_central(u)
+        _, duc_dy = spatial_grad_central(u * self.cos_lat)
+        dv_dx, _ = spatial_grad_central(v)
+        _, dvc_dy = spatial_grad_central(v * self.cos_lat)
+
+        div = (du_dx * self.inv_cos_lat + dvc_dy * self.inv_cos_lat) * 0.2
+        vort = (dv_dx * self.inv_cos_lat - duc_dy * self.inv_cos_lat) * 0.2
+
+        dqu_dx, _ = spatial_grad_central(tcwv * u)
+        _, dqvc_dy = spatial_grad_central(tcwv * v * self.cos_lat)
+        mfc = -(dqu_dx * self.inv_cos_lat + dqvc_dy * self.inv_cos_lat) * 0.01
+
+        return torch.cat([dz1, dz0, dmsl_dx_s, dmsl_dy_s, div, vort, mfc], dim=1)

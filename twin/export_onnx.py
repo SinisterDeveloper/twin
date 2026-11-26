@@ -23,12 +23,20 @@ def export_checkpoint_to_onnx(
     art_dir = static_path.parent
     uv_p = art_dir / "clim_uv_coef.npy"
     clim_uv_coef = np.load(uv_p) if uv_p.exists() else None
+    phys_p = art_dir / "clim_phys_coef.npy"
+    clim_phys_coef = np.load(phys_p) if phys_p.exists() else None
     stats_p = art_dir / "norm_stats.json"
     anom_std = np.array(json.loads(stats_p.read_text())["anom_std"], dtype=np.float32) if stats_p.exists() else None
 
     ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=False)
     model_name = ckpt["model_name"]
-    model = build_model(model_name, static_grid=static_grid, clim_uv_coef=clim_uv_coef, anom_std=anom_std)
+    model = build_model(
+        model_name,
+        static_grid=static_grid,
+        clim_uv_coef=clim_uv_coef,
+        clim_phys_coef=clim_phys_coef,
+        anom_std=anom_std,
+    )
     model.load_state_dict(ckpt["model"])
     model.eval()
 

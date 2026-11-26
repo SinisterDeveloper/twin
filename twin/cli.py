@@ -190,11 +190,12 @@ def _smoke_test() -> None:
 
     static = np.zeros((6, NLAT, NLON), dtype=np.float32)
     uv_coef = np.zeros((9, 2, NLAT, NLON), dtype=np.float32)
+    phys_coef = np.zeros((9, NC, NLAT, NLON), dtype=np.float32)
     anom_std = np.array([2.5, 1.0, 3.5, 2.5, 300.0, 8.0], dtype=np.float32)
     z = torch.randn(2, T_IN, NC, NLAT, NLON)
     sc = torch.tensor([[0.0, 1.0], [0.5, 0.86]], dtype=torch.float32)
     for name in MODEL_NAMES:
-        m = build_model(name, static_grid=static, clim_uv_coef=uv_coef, anom_std=anom_std)
+        m = build_model(name, static_grid=static, clim_uv_coef=uv_coef, clim_phys_coef=phys_coef, anom_std=anom_std)
         out = m(z, sc)
         assert out.shape == (2, NC, NLAT, NLON), f"{name} bad shape {out.shape}"
         assert torch.isfinite(out).all(), f"{name} non-finite"

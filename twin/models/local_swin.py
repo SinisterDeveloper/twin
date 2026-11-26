@@ -1,9 +1,4 @@
-"""Family C: Local Shifted-Window WeatherFormer (LocalSwin).
-
-Uses non-overlapping 4x4 window self-attention and replicate-padded 2-cell shifted
-4x4 window self-attention with zero global attention and zero cyclic wrap-around,
-guaranteeing bounded Day-1 causality while capturing directional cross-variable structure.
-"""
+"""Family C: Strictly Local Shifted-Window WeatherFormer (LocalSwin v3)."""
 from __future__ import annotations
 
 import math
@@ -15,7 +10,7 @@ import torch.nn.functional as F
 
 from ..contract import NC, T_IN
 from .convnext_unet import FiLM
-from .physics import PhysicsFeatureBlock
+from .physics import ChannelLayerNorm2d, PhysicsFeatureBlock
 
 
 class LocalWindowBlock(nn.Module):
@@ -28,13 +23,13 @@ class LocalWindowBlock(nn.Module):
         self.shifted = shifted
         self.scale = 1.0 / math.sqrt(self.head_dim)
 
-        self.norm1 = nn.GroupNorm(min(8, dim), dim)
+        self.norm1 = ChannelLayerNorm2d(dim)
         self.qkv = nn.Linear(dim, dim * 3)
         self.proj = nn.Linear(dim, dim)
         n_tok = window_size * window_size
         self.rel_pos_bias = nn.Parameter(torch.zeros(num_heads, n_tok, n_tok))
 
-        self.norm2 = nn.GroupNorm(min(8, dim), dim)
+        self.norm2 = ChannelLayerNorm2d(dim)
         self.film = FiLM(2, dim)
         self.mlp = nn.Sequential(
             nn.Conv2d(dim, dim * 2, 1),
@@ -43,15 +38,13 @@ class LocalWindowBlock(nn.Module):
         )
 
     def _window_attn(self, x: torch.Tensor) -> torch.Tensor:
-        # x: [B, C, H, W] where H, W divisible by ws
         b, c, h, w = x.shape
         ws = self.ws
         nh, nw = h // ws, w // ws
 
-        # [B, C, nh, ws, nw, ws] -> [B*nh*nw, ws*ws, C]
         wins = x.view(b, c, nh, ws, nw, ws).permute(0, 2, 4, 3, 5, 1).reshape(b * nh * nw, ws * ws, c)
         qkv = self.qkv(wins).reshape(b * nh * nw, ws * ws, 3, self.num_heads, self.head_dim)
-        qkv = qkv.permute(2, 0, 3, 1, 4)  # [3, BW, H, N, D]
+        qkv = qkv.permute(2, 0, 3, 1, 4)
         q, k, v = qkv[0], qkv[1], qkv[2]
 
         scores = torch.matmul(q, k.transpose(-2, -1)) * self.scale + self.rel_pos_bias.unsqueeze(0)
@@ -82,6 +75,7 @@ class LocalWeatherFormer(nn.Module):
         self,
         static_grid: np.ndarray,
         clim_uv_coef: np.ndarray | None = None,
+        clim_phys_coef: np.ndarray | None = None,
         anom_std: np.ndarray | None = None,
         dim: int = 96,
         num_heads: int = 4,
@@ -89,12 +83,12 @@ class LocalWeatherFormer(nn.Module):
     ):
         super().__init__()
         self.register_buffer("static_grid", torch.from_numpy(static_grid).unsqueeze(0))
-        self.phys = PhysicsFeatureBlock()
+        self.phys = PhysicsFeatureBlock(clim_phys_coef=clim_phys_coef, anom_std=anom_std)
         in_ch = T_IN * NC + PhysicsFeatureBlock.OUT_CHANNELS + static_grid.shape[0]
 
         self.stem = nn.Sequential(
             nn.Conv2d(in_ch, dim, 3, padding=1, padding_mode="replicate"),
-            nn.GroupNorm(8, dim),
+            ChannelLayerNorm2d(dim),
             nn.GELU(),
         )
         self.block1 = LocalWindowBlock(dim=dim, num_heads=num_heads, window_size=window_size, shifted=False)
@@ -115,7 +109,7 @@ class LocalWeatherFormer(nn.Module):
             z_flat = z_hist
             z_last = z_seq[:, -1]
 
-        pf = self.phys(z_seq)
+        pf = self.phys(z_seq, doy_sc)
         s = self.static_grid.expand(b, -1, -1, -1)
         feat = self.stem(torch.cat([z_flat, pf, s], dim=1))
         feat = self.block1(feat, doy_sc)

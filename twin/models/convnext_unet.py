@@ -1,8 +1,4 @@
-"""Family A: Bounded-RF 2-Scale ConvNeXt-UNet v2 with Physics Features & FiLM conditioning.
-
-Receptive field is strictly bounded (~6-7 cells per 1-day step) with zero global pooling
-to satisfy Day-1 shock locality (>=60% energy within 3 cells) while resolving sharp fronts.
-"""
+"""Family A: Strictly Local 2-Scale ConvNeXt-UNet v3 with ChannelLayerNorm2d & Exact Physics Features."""
 from __future__ import annotations
 
 import numpy as np
@@ -11,7 +7,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from ..contract import NC, T_IN
-from .physics import PhysicsFeatureBlock
+from .physics import ChannelLayerNorm2d, PhysicsFeatureBlock
 
 
 class FiLM(nn.Module):
@@ -34,7 +30,7 @@ class ConvNeXtBlock(nn.Module):
         super().__init__()
         pad = kernel_size // 2
         self.dw = nn.Conv2d(dim, dim, kernel_size, padding=pad, padding_mode="replicate", groups=dim)
-        self.norm = nn.GroupNorm(min(8, dim), dim)
+        self.norm = ChannelLayerNorm2d(dim)
         hidden = int(dim * mlp_ratio)
         self.pw1 = nn.Conv2d(dim, hidden, 1)
         self.act = nn.GELU()
@@ -52,20 +48,21 @@ class ConvNeXtUNet(nn.Module):
         self,
         static_grid: np.ndarray,
         clim_uv_coef: np.ndarray | None = None,
+        clim_phys_coef: np.ndarray | None = None,
         anom_std: np.ndarray | None = None,
         base_dim: int = 80,
         depth: int = 2,
     ):
         super().__init__()
         self.register_buffer("static_grid", torch.from_numpy(static_grid).unsqueeze(0))
-        self.phys = PhysicsFeatureBlock()
+        self.phys = PhysicsFeatureBlock(clim_phys_coef=clim_phys_coef, anom_std=anom_std)
         in_ch = T_IN * NC + PhysicsFeatureBlock.OUT_CHANNELS + static_grid.shape[0]
         d1 = base_dim
         d2 = base_dim * 2
 
         self.stem = nn.Sequential(
             nn.Conv2d(in_ch, d1, 3, padding=1, padding_mode="replicate"),
-            nn.GroupNorm(8, d1),
+            ChannelLayerNorm2d(d1),
             nn.GELU(),
         )
         self.enc1 = nn.ModuleList([ConvNeXtBlock(d1, kernel_size=3) for _ in range(depth)])
@@ -95,7 +92,7 @@ class ConvNeXtUNet(nn.Module):
             z_flat = z_hist
             z_last = z_seq[:, -1]
 
-        pf = self.phys(z_seq)
+        pf = self.phys(z_seq, doy_sc)
         s = self.static_grid.expand(b, -1, -1, -1)
         x = torch.cat([z_flat, pf, s], dim=1)
 

@@ -186,6 +186,8 @@ def make_predictor(
     clim_tr = np.load(artifacts_dir / "clim.npy")
     uv_p = artifacts_dir / "clim_uv_coef.npy"
     clim_uv_coef = np.load(uv_p) if uv_p.exists() else None
+    phys_p = artifacts_dir / "clim_phys_coef.npy"
+    clim_phys_coef = np.load(phys_p) if phys_p.exists() else None
     meta = json.loads((artifacts_dir / "norm_stats.json").read_text())
     anom_std = np.array(meta["anom_std"], dtype=np.float32)
 
@@ -208,6 +210,7 @@ def make_predictor(
                 ckpt["model_name"],
                 static_grid=static_grid,
                 clim_uv_coef=clim_uv_coef,
+                clim_phys_coef=clim_phys_coef,
                 anom_std=anom_std,
             ).to(device)
             m.load_state_dict(ckpt["model"])

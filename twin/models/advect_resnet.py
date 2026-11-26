@@ -1,9 +1,4 @@
-"""Family B: Physics-Informed Advection-Diffusion ResNet v2.
-
-Reconstructs total physical wind (climatological 4-harmonic wind + anomaly) for
-2-substep midpoint (RK2) semi-Lagrangian grid_sample advection, followed by
-local physics features and bounded-RF FiLM residual blocks.
-"""
+"""Family B: Strictly Local Physics-Informed Advection-Diffusion ResNet v3."""
 from __future__ import annotations
 
 import numpy as np
@@ -12,16 +7,16 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from ..contract import NC, NLAT, NLON, T_IN
-from .physics import PhysicsFeatureBlock, eval_harmonic_4
+from .physics import ChannelLayerNorm2d, PhysicsFeatureBlock, eval_harmonic_4
 
 
 class FiLMResBlock(nn.Module):
     def __init__(self, dim: int):
         super().__init__()
         self.conv1 = nn.Conv2d(dim, dim, 3, padding=1, padding_mode="replicate")
-        self.norm1 = nn.GroupNorm(min(8, dim), dim)
+        self.norm1 = ChannelLayerNorm2d(dim)
         self.conv2 = nn.Conv2d(dim, dim, 3, padding=1, padding_mode="replicate")
-        self.norm2 = nn.GroupNorm(min(8, dim), dim)
+        self.norm2 = ChannelLayerNorm2d(dim)
         self.film = nn.Linear(2, dim * 2)
 
     def forward(self, x: torch.Tensor, doy_sc: torch.Tensor) -> torch.Tensor:
@@ -37,6 +32,7 @@ class AdvectResNet(nn.Module):
         self,
         static_grid: np.ndarray,
         clim_uv_coef: np.ndarray | None = None,
+        clim_phys_coef: np.ndarray | None = None,
         anom_std: np.ndarray | None = None,
         dim: int = 96,
         depth: int = 3,
@@ -44,6 +40,8 @@ class AdvectResNet(nn.Module):
         super().__init__()
         self.register_buffer("static_grid", torch.from_numpy(static_grid).unsqueeze(0))
 
+        if clim_uv_coef is None and clim_phys_coef is not None:
+            clim_uv_coef = clim_phys_coef[:, 2:4]
         if clim_uv_coef is None:
             clim_uv_coef = np.zeros((9, 2, NLAT, NLON), dtype=np.float32)
         self.register_buffer("clim_uv_coef", torch.from_numpy(clim_uv_coef.astype(np.float32)))
@@ -64,14 +62,13 @@ class AdvectResNet(nn.Module):
         base_grid = torch.stack([gx, gy], dim=-1).unsqueeze(0)  # [1, H, W, 2]
         self.register_buffer("base_grid", base_grid)
 
-        # Wind (m/s) -> normalized [-1, 1] grid shift per day; clamped to stay <= ~2.8 cells/day on Day 1
         self.advect_scale = nn.Parameter(torch.tensor([0.025, 0.025], dtype=torch.float32))
-        self.phys = PhysicsFeatureBlock()
+        self.phys = PhysicsFeatureBlock(clim_phys_coef=clim_phys_coef, anom_std=anom_std)
 
         in_ch = T_IN * NC + NC + PhysicsFeatureBlock.OUT_CHANNELS + static_grid.shape[0]
         self.stem = nn.Sequential(
             nn.Conv2d(in_ch, dim, 3, padding=1, padding_mode="replicate"),
-            nn.GroupNorm(8, dim),
+            ChannelLayerNorm2d(dim),
             nn.GELU(),
         )
         self.blocks = nn.ModuleList([FiLMResBlock(dim) for _ in range(depth)])
@@ -81,7 +78,7 @@ class AdvectResNet(nn.Module):
 
     def _advect(self, z_last: torch.Tensor, doy_sc: torch.Tensor) -> torch.Tensor:
         clim_uv = eval_harmonic_4(doy_sc, self.clim_uv_coef, shift_minus_one=True)
-        uv_phys = z_last[:, 2:4] * self.anom_std_uv + clim_uv  # [B, 2, H, W] physical m/s
+        uv_phys = z_last[:, 2:4] * self.anom_std_uv + clim_uv
 
         grid = self.base_grid.expand(z_last.shape[0], -1, -1, -1)
         dx1 = torch.clamp(uv_phys[:, 0] * self.advect_scale[0], -0.16, 0.16)
@@ -107,7 +104,7 @@ class AdvectResNet(nn.Module):
             z_last = z_seq[:, -1]
 
         z_adv = self._advect(z_last, doy_sc)
-        pf = self.phys(z_seq)
+        pf = self.phys(z_seq, doy_sc)
         s = self.static_grid.expand(b, -1, -1, -1)
         h = self.stem(torch.cat([z_flat, z_adv, pf, s], dim=1))
         for blk in self.blocks:

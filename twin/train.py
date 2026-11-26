@@ -87,6 +87,8 @@ def run_training(
     clim_tr = np.load(artifacts_dir / "clim.npy")
     uv_p = artifacts_dir / "clim_uv_coef.npy"
     clim_uv_coef = np.load(uv_p) if uv_p.exists() else None
+    phys_p = artifacts_dir / "clim_phys_coef.npy"
+    clim_phys_coef = np.load(phys_p) if phys_p.exists() else None
     meta = json.loads((artifacts_dir / "norm_stats.json").read_text())
     anom_std = np.array(meta["anom_std"], dtype=np.float32)
     phys_std_t = torch.tensor(meta["phys_std"], dtype=torch.float32, device=device)
@@ -99,7 +101,13 @@ def run_training(
     tr_mask = np.array([d <= t_cut for d in dates])
     va_mask = np.array([(d > t_cut) and (d <= v_cut) for d in dates])
 
-    model = build_model(model_name, static_grid=static_grid, clim_uv_coef=clim_uv_coef, anom_std=anom_std).to(device)
+    model = build_model(
+        model_name,
+        static_grid=static_grid,
+        clim_uv_coef=clim_uv_coef,
+        clim_phys_coef=clim_phys_coef,
+        anom_std=anom_std,
+    ).to(device)
     ema = EMA(model, decay=ema_decay)
 
     criterion = MonsoonLoss(

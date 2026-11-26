@@ -212,6 +212,36 @@ def test_shock_stability_loss_backward():
     assert torch.isfinite(loss) and z_pert.grad is not None and torch.isfinite(z_pert.grad).all()
 
 
+def test_strict_zero_far_field_leakage():
+    torch = pytest.importorskip("torch")
+    from twin.models import MODEL_NAMES, build_model
+
+    static = np.zeros((6, NLAT, NLON), dtype=np.float32)
+    phys_coef = np.zeros((9, NC, NLAT, NLON), dtype=np.float32)
+    phys_coef[0, 2] = 6.0  # physical eastward wind
+    phys_coef[0, 3] = 4.0  # physical northward wind
+    phys_coef[0, 5] = 40.0
+    anom_std = np.array([1.7, 0.7, 1.5, 1.4, 280.0, 6.1], dtype=np.float32)
+
+    torch.manual_seed(1)
+    base_z = torch.randn(1, T_IN, NC, NLAT, NLON, dtype=torch.float32) * 0.4
+    shock_z = base_z.clone()
+    shock_z[0, -1, 0, 16, 18] += 4.0  # single-pixel point impulse at center
+    sc = torch.tensor([[0.0, 1.0]], dtype=torch.float32)
+
+    yy, xx = np.meshgrid(np.arange(NLAT), np.arange(NLON), indexing="ij")
+    far_mask = (np.abs(yy - 16) >= 14) | (np.abs(xx - 18) >= 14)
+
+    for name in MODEL_NAMES:
+        m = build_model(name, static_grid=static, clim_phys_coef=phys_coef, anom_std=anom_std).eval()
+        with torch.no_grad():
+            torch.nn.init.normal_(m.head.weight, std=0.05)
+            out_b = m(base_z, sc)[0].numpy()
+            out_s = m(shock_z, sc)[0].numpy()
+        far_diff = float(np.max(np.abs(out_s - out_b)[:, far_mask]))
+        assert far_diff < 1e-6, f"{name} leaked globally to far field: max_diff={far_diff:.2e}"
+
+
 def test_anti_cheat_hygiene():
     root = Path(__file__).resolve().parent.parent
     banned = re.compile(

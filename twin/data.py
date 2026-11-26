@@ -138,9 +138,9 @@ def prepare_artifacts(
 
     data_tr = transform_physical(data[train_mask])
     clim_tr = fit_harmonic_climatology(data_tr, dates[train_mask], harmonics=4)
-    raw_clim = fit_harmonic_climatology(data[train_mask], dates[train_mask], harmonics=4)
+    clim_phys_coef, raw_clim = fit_harmonic_coefs(data[train_mask], dates[train_mask], harmonics=4)
     raw_clim[:, 1] = np.maximum(raw_clim[:, 1], 0.0)
-    clim_uv_coef, _ = fit_harmonic_coefs(data[train_mask, 2:4], dates[train_mask], harmonics=4)
+    clim_uv_coef = clim_phys_coef[:, 2:4].copy()
 
     doys = np.array([date_to_doy365(d) for d in dates[train_mask]], dtype=np.int64)
     anom = data_tr - clim_tr[doys]
@@ -152,6 +152,7 @@ def prepare_artifacts(
     np.save(out_dir / "clim.npy", clim_tr)
     np.save(out_dir / "raw_clim.npy", raw_clim)
     np.save(out_dir / "clim_uv_coef.npy", clim_uv_coef)
+    np.save(out_dir / "clim_phys_coef.npy", clim_phys_coef)
 
     meta = {
         "channels": list(CHANNELS),
