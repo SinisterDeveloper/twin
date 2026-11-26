@@ -52,7 +52,9 @@ def eval_harmonic_4(doy_sc: torch.Tensor, coef: torch.Tensor, shift_minus_one: b
     basis = torch.stack([ones, s1, c1, s2, c2, s3, c3, s4, c4], dim=1)  # [B, 9]
     b = basis.shape[0]
     c, h, w = coef.shape[1], coef.shape[2], coef.shape[3]
-    return torch.matmul(basis, coef.reshape(9, c * h * w)).reshape(b, c, h, w)
+    with torch.amp.autocast(doy_sc.device.type, enabled=False):
+        out = torch.matmul(basis.float(), coef.float().reshape(9, c * h * w)).reshape(b, c, h, w)
+    return out.to(doy_sc.dtype)
 
 
 def spatial_grad_central(x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
@@ -103,36 +105,37 @@ class PhysicsFeatureBlock(nn.Module):
 
     def forward(self, z_hist: torch.Tensor, doy_sc: torch.Tensor) -> torch.Tensor:
         """z_hist: [B, 3, 6, H, W], doy_sc: [B, 2] -> [B, 17, H, W]."""
-        zf = z_hist.float()
-        z_t = zf[:, -1]
-        z_m1 = zf[:, -2]
-        z_m2 = zf[:, -3]
+        with torch.amp.autocast(z_hist.device.type, enabled=False):
+            zf = z_hist.float()
+            z_t = zf[:, -1]
+            z_m1 = zf[:, -2]
+            z_m2 = zf[:, -3]
 
-        dz1 = z_t - z_m1
-        dz0 = z_m1 - z_m2
+            dz1 = z_t - z_m1
+            dz0 = z_m1 - z_m2
 
-        # Reconstruct true physical u10, v10, msl, tcwv in fp32 (msl ~101325 Pa overflows fp16)
-        clim_phys = eval_harmonic_4(doy_sc.float(), self.clim_phys_coef.float(), shift_minus_one=True)
-        phys_t = z_t * self.anom_std_full.float() + clim_phys
-        u = phys_t[:, 2:3]
-        v = phys_t[:, 3:4]
-        msl = phys_t[:, 4:5] - 101325.0
-        tcwv = torch.clamp(phys_t[:, 5:6], min=0.0)
+            # Reconstruct true physical u10, v10, msl, tcwv in fp32 (msl ~101325 Pa overflows fp16)
+            clim_phys = eval_harmonic_4(doy_sc.float(), self.clim_phys_coef.float(), shift_minus_one=True)
+            phys_t = z_t * self.anom_std_full.float() + clim_phys
+            u = phys_t[:, 2:3]
+            v = phys_t[:, 3:4]
+            msl = phys_t[:, 4:5] - 101325.0
+            tcwv = torch.clamp(phys_t[:, 5:6], min=0.0)
 
-        dmsl_dx, dmsl_dy = spatial_grad_central(msl)
-        dmsl_dx_s = (dmsl_dx * self.inv_cos_lat.float()) * 0.005
-        dmsl_dy_s = dmsl_dy * 0.005
+            dmsl_dx, dmsl_dy = spatial_grad_central(msl)
+            dmsl_dx_s = (dmsl_dx * self.inv_cos_lat.float()) * 0.005
+            dmsl_dy_s = dmsl_dy * 0.005
 
-        du_dx, _ = spatial_grad_central(u)
-        _, duc_dy = spatial_grad_central(u * self.cos_lat.float())
-        dv_dx, _ = spatial_grad_central(v)
-        _, dvc_dy = spatial_grad_central(v * self.cos_lat.float())
+            du_dx, _ = spatial_grad_central(u)
+            _, duc_dy = spatial_grad_central(u * self.cos_lat.float())
+            dv_dx, _ = spatial_grad_central(v)
+            _, dvc_dy = spatial_grad_central(v * self.cos_lat.float())
 
-        div = (du_dx * self.inv_cos_lat.float() + dvc_dy * self.inv_cos_lat.float()) * 0.2
-        vort = (dv_dx * self.inv_cos_lat.float() - duc_dy * self.inv_cos_lat.float()) * 0.2
+            div = (du_dx * self.inv_cos_lat.float() + dvc_dy * self.inv_cos_lat.float()) * 0.2
+            vort = (dv_dx * self.inv_cos_lat.float() - duc_dy * self.inv_cos_lat.float()) * 0.2
 
-        dqu_dx, _ = spatial_grad_central(tcwv * u)
-        _, dqvc_dy = spatial_grad_central(tcwv * v * self.cos_lat.float())
-        mfc = -(dqu_dx * self.inv_cos_lat.float() + dqvc_dy * self.inv_cos_lat.float()) * 0.01
+            dqu_dx, _ = spatial_grad_central(tcwv * u)
+            _, dqvc_dy = spatial_grad_central(tcwv * v * self.cos_lat.float())
+            mfc = -(dqu_dx * self.inv_cos_lat.float() + dqvc_dy * self.inv_cos_lat.float()) * 0.01
 
-        return torch.cat([dz1, dz0, dmsl_dx_s, dmsl_dy_s, div, vort, mfc], dim=1).to(z_hist.dtype)
+            return torch.cat([dz1, dz0, dmsl_dx_s, dmsl_dy_s, div, vort, mfc], dim=1).to(z_hist.dtype)
