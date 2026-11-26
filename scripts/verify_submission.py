@@ -95,7 +95,7 @@ def _run_hygiene_and_anticheat(max_repo_gb: float, require_weights: bool) -> dic
     for p in ROOT.rglob("*"):
         if not p.is_file():
             continue
-        if any(part in p.parts for part in (".git", "node_modules", ".venv", "venv", "data")):
+        if any(part in p.parts for part in (".git", "node_modules", ".venv", "venv", "data", "temp")):
             continue
         total_bytes += p.stat().st_size
     repo_gb = total_bytes / (1024**3)

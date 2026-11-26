@@ -22,6 +22,7 @@ import {
   SEASON_PRESETS,
   type ChannelKey,
 } from "./lib/contract";
+import { getEra5InitStates, loadEra5YearDataset, type Era5YearDataset } from "./lib/era5";
 import {
   buildPerturbation,
   computeDeltaGrid,
@@ -94,8 +95,26 @@ export default function App() {
   const [shockResult, setShockResult] = useState<SimulateResponse | null>(null);
   const [loadingSim, setLoadingSim] = useState<boolean>(false);
   const [preferMock, setPreferMock] = useState<boolean>(false);
+  const [era5, setEra5] = useState<Era5YearDataset | null>(null);
 
-  const initStates = useMemo(() => buildDefaultInitStates(doy), [doy]);
+  useEffect(() => {
+    let cancelled = false;
+    void loadEra5YearDataset().then((ds) => {
+      if (!cancelled && ds) setEra5(ds);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const { initStates, activeDate } = useMemo(() => {
+    if (era5) {
+      const { initStates: states, date } = getEra5InitStates(era5, doy);
+      return { initStates: states, activeDate: date as string | null };
+    }
+    return { initStates: buildDefaultInitStates(doy), activeDate: null as string | null };
+  }, [era5, doy]);
+
   const perturbation = useMemo(
     () => buildPerturbation(shockPreset, initStates[initStates.length - 1], customShock),
     [shockPreset, initStates, customShock],
@@ -331,8 +350,19 @@ export default function App() {
           </section>
 
           <section className="rounded-xl border border-zinc-800/80 bg-zinc-950 p-3.5">
-            <div className="mb-2.5 text-[11px] font-medium uppercase tracking-wider text-zinc-500">
-              Season & Initial State
+            <div className="mb-2.5 flex items-center justify-between gap-2">
+              <span className="text-[11px] font-medium uppercase tracking-wider text-zinc-500">
+                Season & Initial State
+              </span>
+              <span
+                className={`rounded border px-1.5 py-0.5 font-mono text-[10px] tabular-nums ${
+                  activeDate
+                    ? "border-emerald-800/70 bg-emerald-950/60 text-emerald-300"
+                    : "border-zinc-800 bg-black text-zinc-500"
+                }`}
+              >
+                {activeDate ? `ERA5 · ${activeDate}` : "Synthetic"}
+              </span>
             </div>
             <div className="flex flex-col gap-1">
               {SEASON_PRESETS.map((p) => {
