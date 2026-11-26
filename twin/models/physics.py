@@ -90,7 +90,11 @@ class PhysicsFeatureBlock(nn.Module):
         super().__init__()
         if clim_phys_coef is None:
             clim_phys_coef = np.zeros((9, NC, NLAT, NLON), dtype=np.float32)
-        self.register_buffer("clim_phys_coef", torch.from_numpy(clim_phys_coef.astype(np.float32)))
+        else:
+            clim_phys_coef = np.array(clim_phys_coef, dtype=np.float32, copy=True)
+            # Subtract standard MSL (101325 Pa) from constant harmonic so values stay < 1500 (safe in fp16)
+            clim_phys_coef[0, 4] -= 101325.0
+        self.register_buffer("clim_phys_coef", torch.from_numpy(clim_phys_coef))
 
         if anom_std is None:
             std_full = np.array([1.7, 0.7, 1.5, 1.4, 280.0, 6.1], dtype=np.float32)
@@ -114,12 +118,12 @@ class PhysicsFeatureBlock(nn.Module):
             dz1 = z_t - z_m1
             dz0 = z_m1 - z_m2
 
-            # Reconstruct true physical u10, v10, msl, tcwv in fp32 (msl ~101325 Pa overflows fp16)
+            # Reconstruct true physical u10, v10, msl (shifted by 101325 Pa), tcwv
             clim_phys = eval_harmonic_4(doy_sc.float(), self.clim_phys_coef.float(), shift_minus_one=True)
             phys_t = z_t * self.anom_std_full.float() + clim_phys
             u = phys_t[:, 2:3]
             v = phys_t[:, 3:4]
-            msl = phys_t[:, 4:5] - 101325.0
+            msl = phys_t[:, 4:5]
             tcwv = torch.clamp(phys_t[:, 5:6], min=0.0)
 
             dmsl_dx, dmsl_dy = spatial_grad_central(msl)
