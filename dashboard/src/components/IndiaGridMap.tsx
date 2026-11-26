@@ -98,7 +98,7 @@ export function IndiaGridMap({
         if (mag < 0.2) continue;
         const cx = lonToX(LON[j]);
         const cy = latToY(LAT[i]);
-        const scale = Math.min(14, Math.max(3, mag * 0.95)) / mag;
+        const scale = Math.min(13, Math.max(3, mag * 0.9)) / mag;
         arrows.push({
           key: `${i}-${j}`,
           x1: cx,
@@ -133,25 +133,25 @@ export function IndiaGridMap({
   const boxes = showBoxes ? [BOX_ARABIAN_SEA, BOX_BAY_OF_BENGAL] : [];
 
   return (
-    <div className="flex flex-col rounded-xl border border-slate-800 bg-slate-900/70 p-3.5 shadow-lg">
+    <div className="flex flex-col rounded-xl border border-zinc-800/80 bg-zinc-950 p-4">
       {(title || subtitle) && (
-        <div className="mb-2.5 flex items-baseline justify-between gap-2">
+        <div className="mb-3 flex items-center justify-between gap-2">
           <div>
-            {title && <h3 className="text-sm font-semibold text-slate-100">{title}</h3>}
-            {subtitle && <p className="text-xs text-slate-400">{subtitle}</p>}
+            {title && <h3 className="text-sm font-medium tracking-tight text-zinc-100">{title}</h3>}
+            {subtitle && <p className="text-xs text-zinc-500">{subtitle}</p>}
           </div>
-          <span className="rounded bg-slate-800 px-2 py-0.5 font-mono text-[11px] text-cyan-300">
-            32 × 36 · 1°
+          <span className="rounded-md border border-zinc-800 bg-black px-2 py-0.5 font-mono text-[11px] tabular-nums text-zinc-400">
+            32×36 · 1°
           </span>
         </div>
       )}
 
-      <div className="relative mx-auto w-full max-w-[660px] aspect-[36/32] overflow-hidden rounded-lg border border-slate-700/80 bg-slate-950">
+      <div className="relative mx-auto w-full max-w-[660px] aspect-[36/32] overflow-hidden rounded-lg border border-zinc-800/90 bg-black">
         <canvas
           ref={canvasRef}
           width={NLON}
           height={NLAT}
-          className="h-full w-full block"
+          className="block h-full w-full"
           style={{ imageRendering: smoothGrid ? "auto" : "pixelated" }}
         />
 
@@ -165,13 +165,13 @@ export function IndiaGridMap({
           <defs>
             <marker
               id="wind-arrow"
-              markerWidth="4"
-              markerHeight="4"
-              refX="2.5"
-              refY="2"
+              markerWidth="3.5"
+              markerHeight="3.5"
+              refX="2.2"
+              refY="1.75"
               orient="auto"
             >
-              <path d="M0,0 L4,2 L0,4 Z" fill="rgba(248, 250, 252, 0.85)" />
+              <path d="M0,0 L3.5,1.75 L0,3.5 Z" fill="rgba(255, 255, 255, 0.78)" />
             </marker>
           </defs>
 
@@ -185,11 +185,11 @@ export function IndiaGridMap({
                   y1={y}
                   x2={SVG_W}
                   y2={y}
-                  stroke="rgba(148, 163, 184, 0.22)"
-                  strokeWidth={0.6}
+                  stroke="rgba(255, 255, 255, 0.12)"
+                  strokeWidth={0.55}
                   strokeDasharray="2 3"
                 />
-                <text x={4} y={y - 2} fill="rgba(226, 232, 240, 0.65)" fontSize="8" fontFamily="monospace">
+                <text x={5} y={y - 3} fill="rgba(244, 244, 245, 0.55)" fontSize="7.5" fontFamily="monospace">
                   {lat}°N
                 </text>
               </g>
@@ -197,6 +197,7 @@ export function IndiaGridMap({
           })}
           {[70, 80, 90, 100].map((lon) => {
             const x = lonToX(lon);
+            const rightEdge = lon >= 98;
             return (
               <g key={`lon-${lon}`}>
                 <line
@@ -204,18 +205,25 @@ export function IndiaGridMap({
                   y1={0}
                   x2={x}
                   y2={SVG_H}
-                  stroke="rgba(148, 163, 184, 0.22)"
-                  strokeWidth={0.6}
+                  stroke="rgba(255, 255, 255, 0.12)"
+                  strokeWidth={0.55}
                   strokeDasharray="2 3"
                 />
-                <text x={x + 2} y={SVG_H - 4} fill="rgba(226, 232, 240, 0.65)" fontSize="8" fontFamily="monospace">
+                <text
+                  x={rightEdge ? x - 3 : x + 3}
+                  y={SVG_H - 5}
+                  textAnchor={rightEdge ? "end" : "start"}
+                  fill="rgba(244, 244, 245, 0.55)"
+                  fontSize="7.5"
+                  fontFamily="monospace"
+                >
                   {lon}°E
                 </text>
               </g>
             );
           })}
 
-          {/* Approximate Coastline & Himalayan Context */}
+          {/* Coastline & Border Context */}
           {INDIA_COAST_POLYLINES.map((poly, idx) => {
             const pts = poly.map(([lo, la]) => `${lonToX(lo).toFixed(1)},${latToY(la).toFixed(1)}`).join(" ");
             return (
@@ -223,15 +231,15 @@ export function IndiaGridMap({
                 key={`coast-${idx}`}
                 points={pts}
                 fill="none"
-                stroke={idx === 2 ? "rgba(248, 250, 252, 0.45)" : "rgba(248, 250, 252, 0.88)"}
-                strokeWidth={idx === 2 ? 0.9 : 1.3}
-                strokeDasharray={idx === 2 ? "3 2" : undefined}
+                stroke={idx === 2 ? "rgba(255, 255, 255, 0.36)" : "rgba(255, 255, 255, 0.85)"}
+                strokeWidth={idx === 2 ? 0.85 : 1.15}
+                strokeDasharray={idx === 2 ? "2.5 2" : undefined}
                 strokeLinejoin="round"
               />
             );
           })}
 
-          {/* Round-1 Shock Regions */}
+          {/* Reference Shock Boxes */}
           {boxes.map((box) => {
             const x = lonToX(box.lon0 - 0.5);
             const y = latToY(box.lat1 + 0.5);
@@ -244,17 +252,17 @@ export function IndiaGridMap({
                   y={y}
                   width={w}
                   height={h}
-                  fill="rgba(34, 211, 238, 0.06)"
-                  stroke="rgba(34, 211, 238, 0.75)"
-                  strokeWidth={1.1}
-                  strokeDasharray="4 2"
+                  fill="rgba(255, 255, 255, 0.04)"
+                  stroke="rgba(255, 255, 255, 0.55)"
+                  strokeWidth={0.9}
+                  strokeDasharray="3.5 2.5"
                 />
                 <text
                   x={x + 4}
                   y={y + 10}
-                  fill="rgba(165, 243, 252, 0.92)"
-                  fontSize="8"
-                  fontWeight="600"
+                  fill="rgba(250, 250, 250, 0.82)"
+                  fontSize="7.5"
+                  fontWeight="500"
                 >
                   {box.name}
                 </text>
@@ -270,13 +278,13 @@ export function IndiaGridMap({
               y1={a.y1}
               x2={a.x2}
               y2={a.y2}
-              stroke="rgba(248, 250, 252, 0.75)"
-              strokeWidth={0.95}
+              stroke="rgba(255, 255, 255, 0.72)"
+              strokeWidth={0.85}
               markerEnd="url(#wind-arrow)"
             />
           ))}
 
-          {/* Hovered Cell Highlight */}
+          {/* Hovered Cell */}
           {hover && (
             <rect
               x={hover.j * (SVG_W / NLON)}
@@ -285,22 +293,22 @@ export function IndiaGridMap({
               height={SVG_H / NLAT}
               fill="none"
               stroke="#ffffff"
-              strokeWidth={1.5}
+              strokeWidth={1.3}
             />
           )}
         </svg>
 
         {hover && (
-          <div className="pointer-events-none absolute top-2 right-2 rounded-lg border border-slate-700 bg-slate-950/90 px-2.5 py-2 text-[11px] shadow-xl backdrop-blur">
-            <div className="mb-1 font-mono font-semibold text-cyan-300">
+          <div className="pointer-events-none absolute top-2.5 right-2.5 rounded-lg border border-zinc-800 bg-black/90 px-3 py-2 text-[11px] shadow-2xl backdrop-blur-md">
+            <div className="mb-1.5 font-mono font-medium tabular-nums text-zinc-100">
               {LAT[hover.i].toFixed(1)}°N, {LON[hover.j].toFixed(1)}°E
             </div>
-            <div className="grid grid-cols-2 gap-x-3 gap-y-0.5 text-slate-200">
+            <div className="grid grid-cols-2 gap-x-3.5 gap-y-0.5 font-mono tabular-nums text-zinc-400">
               {CHANNELS.map((c) => {
                 const m = CHANNEL_META[c];
                 return (
-                  <div key={c} className={c === channel ? "font-semibold text-amber-300" : ""}>
-                    <span className="text-slate-400">{c}: </span>
+                  <div key={c} className={c === channel ? "font-medium text-zinc-50" : ""}>
+                    <span className="text-zinc-500">{c} </span>
                     {m.format(stateGrid[m.index][hover.i][hover.j], useCelsius)}
                   </div>
                 );
@@ -310,13 +318,13 @@ export function IndiaGridMap({
         )}
       </div>
 
-      {/* Colorbar Legend */}
-      <div className="mx-auto mt-3 w-full max-w-[660px]">
+      {/* Colorbar */}
+      <div className="mx-auto mt-3.5 w-full max-w-[660px]">
         <div
-          className="h-2.5 w-full rounded-full border border-slate-700"
+          className="h-1.5 w-full rounded-full border border-zinc-800"
           style={{ background: cssLinearGradient(cmap) }}
         />
-        <div className="mt-1 flex justify-between font-mono text-[11px] text-slate-400">
+        <div className="mt-1.5 flex justify-between font-mono text-[11px] tabular-nums text-zinc-500">
           <span>
             {rMin.toFixed(1)} {meta.displayUnit(useCelsius)}
           </span>

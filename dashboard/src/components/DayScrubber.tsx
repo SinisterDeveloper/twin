@@ -24,31 +24,31 @@ export function DayScrubber({
   const effectiveDoy = ((doy + day - 1) % 365) + 1;
 
   return (
-    <div className="flex flex-wrap items-center gap-3 rounded-xl border border-slate-800 bg-slate-900/70 px-4 py-3 shadow-lg">
+    <div className="flex flex-wrap items-center gap-4 rounded-xl border border-zinc-800/80 bg-zinc-950 px-4 py-3">
       <div className="flex items-center gap-1.5">
         <button
           type="button"
           onClick={() => onChangeDay(0)}
           title="Reset to Day 0"
-          className="rounded-lg border border-slate-700 bg-slate-800 p-2 text-slate-200 hover:bg-slate-700"
+          className="rounded-md border border-zinc-800 bg-black p-1.5 text-zinc-400 transition hover:bg-zinc-900 hover:text-zinc-100"
         >
-          <RotateCcw className="h-4 w-4" />
+          <RotateCcw className="h-3.5 w-3.5" />
         </button>
         <button
           type="button"
           onClick={() => onChangeDay(Math.max(0, day - 1))}
           disabled={day === 0}
           title="Previous Day"
-          className="rounded-lg border border-slate-700 bg-slate-800 p-2 text-slate-200 hover:bg-slate-700 disabled:opacity-40"
+          className="rounded-md border border-zinc-800 bg-black p-1.5 text-zinc-400 transition hover:bg-zinc-900 hover:text-zinc-100 disabled:opacity-35"
         >
-          <SkipBack className="h-4 w-4" />
+          <SkipBack className="h-3.5 w-3.5" />
         </button>
         <button
           type="button"
           onClick={onTogglePlay}
-          className="flex items-center gap-1.5 rounded-lg bg-cyan-500 px-3 py-2 text-xs font-semibold text-slate-950 hover:bg-cyan-400"
+          className="flex h-7 items-center gap-1.5 rounded-md bg-zinc-50 px-3 text-xs font-medium text-zinc-950 transition hover:bg-zinc-200"
         >
-          {playing ? <Pause className="h-4 w-4" /> : <Play className="h-4 w-4" />}
+          {playing ? <Pause className="h-3.5 w-3.5" /> : <Play className="h-3.5 w-3.5" />}
           {playing ? "Pause" : "Play"}
         </button>
         <button
@@ -56,18 +56,18 @@ export function DayScrubber({
           onClick={() => onChangeDay(Math.min(maxDay, day + 1))}
           disabled={day === maxDay}
           title="Next Day"
-          className="rounded-lg border border-slate-700 bg-slate-800 p-2 text-slate-200 hover:bg-slate-700 disabled:opacity-40"
+          className="rounded-md border border-zinc-800 bg-black p-1.5 text-zinc-400 transition hover:bg-zinc-900 hover:text-zinc-100 disabled:opacity-35"
         >
-          <SkipForward className="h-4 w-4" />
+          <SkipForward className="h-3.5 w-3.5" />
         </button>
       </div>
 
-      <div className="flex min-w-[200px] flex-1 flex-col gap-1">
+      <div className="flex min-w-[200px] flex-1 flex-col gap-1.5">
         <div className="flex items-center justify-between text-xs">
-          <span className="font-semibold text-slate-200">
-            {day === 0 ? "Day 0 (Initial State)" : `Forecast Day +${day}`}
+          <span className="font-medium text-zinc-200">
+            {day === 0 ? "Day 0 · Initial State" : `Forecast Day +${day}`}
           </span>
-          <span className="font-mono text-slate-400">DOY {effectiveDoy}</span>
+          <span className="font-mono tabular-nums text-zinc-500">DOY {effectiveDoy}</span>
         </div>
         <input
           type="range"
@@ -76,25 +76,25 @@ export function DayScrubber({
           step={1}
           value={day}
           onChange={(e) => onChangeDay(Number(e.target.value))}
-          className="h-2 w-full cursor-pointer accent-cyan-400"
+          className="shadcn-slider w-full"
         />
-        <div className="flex justify-between font-mono text-[10px] text-slate-500">
+        <div className="flex justify-between font-mono text-[10px] tabular-nums text-zinc-600">
           {Array.from({ length: maxDay + 1 }, (_, d) => (
-            <span key={d} className={d === day ? "font-bold text-cyan-300" : ""}>
+            <span key={d} className={d === day ? "font-semibold text-zinc-100" : ""}>
               {d === 0 ? "T0" : `+${d}`}
             </span>
           ))}
         </div>
       </div>
 
-      <div className="flex items-center gap-1 rounded-lg border border-slate-800 bg-slate-950 p-1 text-xs">
+      <div className="flex items-center gap-0.5 rounded-md border border-zinc-800 bg-black p-0.5 text-[11px]">
         {[0.5, 1, 2].map((s) => (
           <button
             key={s}
             type="button"
             onClick={() => onChangeSpeed(s)}
-            className={`rounded px-2 py-1 font-mono transition ${
-              speed === s ? "bg-slate-700 text-cyan-300" : "text-slate-400 hover:text-slate-200"
+            className={`rounded px-2 py-1 font-mono tabular-nums transition ${
+              speed === s ? "bg-zinc-800 text-zinc-100" : "text-zinc-500 hover:text-zinc-300"
             }`}
           >
             {s}×
