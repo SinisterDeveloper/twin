@@ -1,0 +1,17 @@
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+env/
+.ipynb_checkpoints/
+data/
+runs/
+*.nc
+*.nc4
+*.grib
+*.grib2
+*.zarr
+node_modules/
+dashboard/dist/
+.DS_Store
