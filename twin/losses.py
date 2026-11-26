@@ -107,7 +107,10 @@ class MonsoonLoss(nn.Module):
             vp = pred_phys_late.var(dim=(-2, -1), unbiased=False)
             vt = true_phys_late.var(dim=(-2, -1), unbiased=False)
             ratio_std = torch.sqrt(vp / (vt + 1e-4) + 1e-6)
-            loss_var = F.l1_loss(ratio_std, torch.ones_like(ratio_std))
+            ch_w = torch.tensor([1.0, 3.0, 1.0, 1.0, 1.0, 1.0], device=zp.device, dtype=zp.dtype).view(1, 1, 6)
+            under = F.relu(0.92 - ratio_std)
+            over = F.relu(ratio_std - 1.05)
+            loss_var = ((2.5 * under + over) * ch_w).mean()
 
         total = (
             loss_base
@@ -134,8 +137,10 @@ def shock_stability_loss(
     clim_tr: torch.Tensor,
     anom_std: torch.Tensor,
     phys_std: torch.Tensor,
+    near_mask: torch.Tensor | None = None,
+    w_prop: float = 0.25,
 ) -> torch.Tensor:
-    """Bound convective tp runaway under random thermodynamic perturbations while keeping baseline detached."""
+    """Bound convective tp runaway and encourage bounded outward shock wave propagation."""
     zb = z_base.float()
     zp = z_pert.float()
     clim_sel = clim_tr[doy_tgt].float()
@@ -150,9 +155,35 @@ def shock_stability_loss(
     all_peak = all_z.amax(dim=(-2, -1))
     tp_worst = tp_peak.amax(dim=1)
     all_worst = all_peak.amax(dim=(1, 2))
-    return (
-        F.relu(tp_peak - 2.5).pow(2).mean()
-        + 0.50 * F.relu(tp_worst - 3.2).pow(2).mean()
-        + 0.35 * F.relu(all_peak - 3.0).pow(2).mean()
-        + 0.25 * F.relu(all_worst - 3.5).pow(2).mean()
+    loss_stab = (
+        F.relu(tp_peak - 1.8).pow(2).mean()
+        + 0.60 * F.relu(tp_worst - 2.2).pow(2).mean()
+        + 0.40 * F.relu(all_peak - 2.2).pow(2).mean()
+        + 0.30 * F.relu(all_worst - 2.6).pow(2).mean()
     )
+
+    if near_mask is not None and zp.shape[1] >= 8 and w_prop > 0.0:
+        d_other = (zp - zb) * a_std
+        d_phys = torch.cat([d_other[:, :, :1], (tp_pert - tp_base).unsqueeze(2), d_other[:, :, 2:]], dim=2)
+        e = (d_phys / p_std).pow(2).sum(dim=2)  # [B, S, H, W]
+        h, w = zp.shape[-2], zp.shape[-1]
+        nm = near_mask.to(device=zp.device, dtype=torch.bool)
+        if nm.ndim == 2:
+            nm = nm.view(1, 1, h, w)
+        elif nm.ndim == 3:
+            nm = nm.unsqueeze(1)
+        tot_e = e.sum(dim=(-2, -1))  # [B, S]
+        near_e0 = (e[:, 0] * nm[:, 0].float()).sum(dim=(-2, -1))
+        out_e = (e * (~nm).float()).sum(dim=(-2, -1))
+        near_frac0 = near_e0 / (tot_e[:, 0] + 1e-6)
+        late_out = out_e[:, 3:8].mean(dim=1)
+        max_tot = tot_e.amax(dim=1)
+
+        active = (tot_e[:, 0] > 1e-3).float()
+        loss_loc = F.relu(0.75 - near_frac0).pow(2)
+        loss_grow = F.relu(2.0 - late_out / (out_e[:, 0] + 1e-4)).pow(2)
+        loss_adv = F.relu(0.05 - late_out / (max_tot + 1e-4)).pow(2)
+        loss_prop = ((loss_loc + 0.25 * loss_grow + 20.0 * loss_adv) * active).mean()
+        return loss_stab + w_prop * loss_prop
+
+    return loss_stab

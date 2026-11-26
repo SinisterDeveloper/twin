@@ -380,3 +380,58 @@ def test_cli_eval_live_parser():
     with pytest.raises(SystemExit) as exc:
         main(["eval-live", "--help"])
     assert exc.value.code == 0
+
+
+def test_monsoon_loss_asymmetric_tp_variance():
+    torch = pytest.importorskip("torch")
+    from twin.losses import MonsoonLoss
+
+    clim_tr = torch.zeros(365, NC, NLAT, NLON, dtype=torch.float32)
+    anom_std = torch.tensor([1.7, 0.7, 1.5, 1.4, 280.0, 6.0], dtype=torch.float32)
+    crit = MonsoonLoss(clim_tr=clim_tr, anom_std=anom_std, w_rain=0.0, w_csi=0.0, w_grad=0.0, w_var=1.0)
+
+    # Construct a target field with spatial variance mostly in tp, keeping other channels exact
+    z_true = torch.zeros(2, 6, NC, NLAT, NLON, dtype=torch.float32)
+    pat = torch.linspace(-1.0, 1.0, NLAT * NLON, dtype=torch.float32).view(1, 1, NLAT, NLON)
+    z_true[:, :, 1] = pat
+    doy_tgt = torch.zeros((2, 6), dtype=torch.long)
+    phys_true = z_true * anom_std.view(1, 1, NC, 1, 1)
+    phys_true[:, :, 1] = torch.expm1(torch.clamp(phys_true[:, :, 1], min=0.0, max=5.8))
+
+    # Isolate loss_var magnitude comparison by matching tp mean while scaling variance down vs up
+    z_under = z_true.clone()
+    z_under[:, :, 1] = 0.5 * pat
+    z_over = z_true.clone()
+    z_over[:, :, 1] = 1.5 * pat
+    _, s_under = crit(z_under, z_true, doy_tgt, phys_true)
+    _, s_over = crit(z_over, z_true, doy_tgt, phys_true)
+    assert s_under["var"] > s_over["var"] > 0.0
+
+
+def test_shock_stability_loss_propagation_hinge():
+    torch = pytest.importorskip("torch")
+    from twin.losses import shock_stability_loss
+
+    clim_tr = torch.zeros(365, NC, NLAT, NLON, dtype=torch.float32)
+    anom_std = torch.tensor([1.7, 0.7, 1.5, 1.4, 280.0, 6.0], dtype=torch.float32)
+    phys_std = torch.tensor([13.4, 7.5, 2.9, 2.4, 618.0, 20.4], dtype=torch.float32)
+    z_base = torch.zeros(2, SCORE_STEPS, NC, NLAT, NLON, dtype=torch.float32)
+    doy_tgt = torch.zeros((2, SCORE_STEPS), dtype=torch.long)
+
+    near = torch.zeros((NLAT, NLON), dtype=torch.bool)
+    near[8:16, 8:16] = True
+
+    # Trapped inside near_mask (never propagates outward in steps 3..7)
+    z_trapped = z_base.clone().requires_grad_(True)
+    with torch.no_grad():
+        z_trapped[:, 0, 2, 10:14, 10:14] = 1.0
+    loss_trapped = shock_stability_loss(z_base, z_trapped, doy_tgt, clim_tr, anom_std, phys_std, near_mask=near)
+    loss_trapped.backward()
+    assert torch.isfinite(loss_trapped) and torch.isfinite(z_trapped.grad).all()
+
+    # Properly localized day-1 + outward wave propagation in steps 3..7
+    z_prop = z_base.clone()
+    z_prop[:, 0, 2, 10:14, 10:14] = 1.0
+    z_prop[:, 3:8, 2, 20:26, 20:26] = 0.8
+    loss_prop = shock_stability_loss(z_base, z_prop, doy_tgt, clim_tr, anom_std, phys_std, near_mask=near)
+    assert float(loss_trapped) > float(loss_prop)

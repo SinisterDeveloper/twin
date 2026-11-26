@@ -387,7 +387,7 @@ def main(argv=None) -> int:
     t.add_argument("--w-rain", type=float, default=0.30)
     t.add_argument("--w-csi", type=float, default=0.25)
     t.add_argument("--w-grad", type=float, default=0.15)
-    t.add_argument("--w-var", type=float, default=0.15)
+    t.add_argument("--w-var", type=float, default=0.22)
     t.add_argument("--w-stab", type=float, default=0.40)
     t.add_argument("--pushforward-noise", type=float, default=0.03)
     t.add_argument("--seed", type=int, default=42)

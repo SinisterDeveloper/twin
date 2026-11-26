@@ -398,7 +398,7 @@ def fit_ensemble_weights(
         axis=0,
     )
 
-    def _score_weights(w: np.ndarray) -> tuple[float, float, float, float]:
+    def _score_weights(w: np.ndarray) -> tuple[float, float, float, float, float, float, float]:
         ens_w = np.sum(stack_w * w[:, None, None, :, None, None], axis=0)
         ens_w[:, :, 1] = np.maximum(ens_w[:, :, 1], 0.0)
         ens_w[:, :, 0] = np.clip(ens_w[:, :, 0], 233.15, 333.15)
@@ -416,7 +416,9 @@ def fit_ensemble_weights(
             )
             blur_l.append(variance_ratio(ens_w[wi, 7], trues[wi, 7]))
         f_pts = forecast_points(ss_l, csi_l)
-        b_pts = anti_blur_points(np.stack(blur_l, axis=0))
+        blur_mat = np.stack(blur_l, axis=0)
+        b_pts = anti_blur_points(blur_mat)
+        tp_blur = float(np.nanmean(blur_mat[:, 1]))
 
         shock_res = []
         null_ok = True
@@ -431,7 +433,7 @@ def fit_ensemble_weights(
         tot = f_pts["points"] + b_pts + c_pts
         raw_skill = float(np.mean(ss_l) + 0.5 * np.mean(csi_l)) if ss_l and csi_l else 0.0
         worst_z = float(max((r.get("max_z", 0.0) for r in shock_res), default=0.0))
-        return tot, f_pts["points"], b_pts, c_pts, raw_skill, worst_z
+        return tot, f_pts["points"], b_pts, c_pts, raw_skill, worst_z, tp_blur
 
     rng = np.random.default_rng(seed)
     best_w = np.full((m_cnt, NC), 1.0 / m_cnt, dtype=np.float32)
@@ -446,8 +448,9 @@ def fit_ensemble_weights(
         candidates.append(c)
 
     def _rank_key(m_val: tuple) -> tuple:
-        feasible = int(m_val[2] >= 9.95 and m_val[3] >= 14.95 and m_val[5] < 5.0)
-        return (feasible, round(m_val[0], 2), round(m_val[4], 6), -round(m_val[5], 4))
+        safe = int(m_val[2] >= 9.95 and m_val[5] <= 3.2 and m_val[6] >= 0.75)
+        feasible = int(m_val[2] >= 9.95 and m_val[5] < 5.0)
+        return (safe, feasible, round(m_val[0], 2), round(m_val[4], 6), -round(m_val[5], 4))
 
     best_key = _rank_key(best_metrics)
     for w_cand in candidates:
@@ -468,4 +471,6 @@ def fit_ensemble_weights(
         "forecast_pts": round(best_metrics[1], 2),
         "anti_blur_pts": round(best_metrics[2], 2),
         "causality_pts": round(best_metrics[3], 2),
+        "worst_max_z": round(best_metrics[5], 4),
+        "tp_blur_ratio": round(best_metrics[6], 4),
     }
