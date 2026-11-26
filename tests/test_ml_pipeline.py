@@ -178,6 +178,24 @@ def test_all_models_onnx_parity_and_cpu_speed(tmp_path: Path):
         assert elapsed_ms < 500.0, f"{name} 10-step CPU too slow: {elapsed_ms:.1f} ms"
 
 
+def test_monsoon_loss_backward_no_inplace():
+    torch = pytest.importorskip("torch")
+    from twin.losses import MonsoonLoss
+
+    clim_tr = torch.zeros(365, NC, NLAT, NLON, dtype=torch.float32)
+    anom_std = torch.tensor([1.7, 0.7, 1.5, 1.4, 280.0, 6.0], dtype=torch.float32)
+    crit = MonsoonLoss(clim_tr=clim_tr, anom_std=anom_std)
+
+    for steps in (1, 6):
+        z_pred = torch.randn(4, steps, NC, NLAT, NLON, dtype=torch.float32, requires_grad=True)
+        z_true = torch.randn(4, steps, NC, NLAT, NLON, dtype=torch.float32)
+        doy_tgt = torch.randint(0, 365, (4, steps))
+        phys_true = torch.rand(4, steps, NC, NLAT, NLON, dtype=torch.float32) * 15.0
+        loss, _ = crit(z_pred, z_true, doy_tgt, phys_true)
+        loss.backward()
+        assert z_pred.grad is not None and torch.isfinite(z_pred.grad).all()
+
+
 def test_anti_cheat_hygiene():
     root = Path(__file__).resolve().parent.parent
     banned = re.compile(

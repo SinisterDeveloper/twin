@@ -100,8 +100,9 @@ class MonsoonLoss(nn.Module):
         loss_var = zp.new_tensor(0.0)
         if self.w_var > 0:
             s0 = 4 if steps >= 5 else 0
-            pred_phys_late = pred_tr[:, s0:].clone()
-            pred_phys_late[:, :, 1] = torch.expm1(torch.clamp(pred_phys_late[:, :, 1], min=0.0, max=8.0))
+            late_tr = pred_tr[:, s0:]
+            tp_late = torch.expm1(torch.clamp(late_tr[:, :, 1:2], min=0.0, max=8.0))
+            pred_phys_late = torch.cat([late_tr[:, :, 0:1], tp_late, late_tr[:, :, 2:]], dim=2)
             true_phys_late = pt[:, s0:]
             vp = pred_phys_late.var(dim=(-2, -1), unbiased=False)
             vt = true_phys_late.var(dim=(-2, -1), unbiased=False)
