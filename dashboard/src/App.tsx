@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState, type CSSProperties } from "react";
 import { DayScrubber } from "./components/DayScrubber";
 import { DEFAULT_MAP_VIEW, IndiaGridMap, type MapViewState } from "./components/IndiaGridMap";
 import { ShockBuilder } from "./components/ShockBuilder";
@@ -49,12 +49,12 @@ function SwitchRow({ label, checked, onChange }: SwitchRowProps) {
       <span>{label}</span>
       <span
         className={`relative inline-flex h-4 w-7 shrink-0 items-center rounded-full border transition ${
-          checked ? "border-zinc-200 bg-zinc-100" : "border-zinc-700 bg-zinc-900"
+          checked ? "border-zinc-200 bg-zinc-200" : "border-white/[0.08] bg-zinc-800/90"
         }`}
       >
         <span
           className={`inline-block h-2.5 w-2.5 rounded-full transition-transform ${
-            checked ? "translate-x-3.5 bg-black" : "translate-x-0.5 bg-zinc-400"
+            checked ? "translate-x-3.5 bg-zinc-950" : "translate-x-0.5 bg-zinc-400"
           }`}
         />
       </span>
@@ -237,10 +237,12 @@ export default function App() {
       ? (lat: number, lon: number) => setCustomShock((prev) => ({ ...prev, lat, lon }))
       : undefined;
 
+  const doyPct = `${((doy - 1) / 364) * 100}%`;
+
   return (
-    <div className="min-h-screen bg-black text-zinc-50">
+    <div className="min-h-screen bg-black bg-[radial-gradient(ellipse_at_top,rgba(255,255,255,0.035),transparent_55%)] text-zinc-50">
       {/* Slim Header */}
-      <header className="sticky top-0 z-20 h-11 border-b border-zinc-900 bg-black/90 px-5 backdrop-blur-md">
+      <header className="sticky top-0 z-20 h-11 border-b border-white/[0.07] bg-black/80 px-5 backdrop-blur-md">
         <div className="mx-auto flex h-full max-w-[1440px] items-center justify-between gap-3">
           <h1 className="text-sm font-medium tracking-tight text-zinc-100">
             Multiverse of Monsoon
@@ -255,7 +257,7 @@ export default function App() {
       {/* Main Workspace */}
       <main className="mx-auto grid max-w-[1440px] grid-cols-1 md:grid-cols-[268px_1fr]">
         {/* Unified Left Sidebar Rail */}
-        <aside className="flex flex-col gap-5 border-b border-zinc-900 px-4 py-4 md:border-b-0 md:border-r">
+        <aside className="flex flex-col gap-5 border-b border-white/[0.07] bg-white/[0.012] px-4 py-4 md:border-b-0 md:border-r">
           <ShockBuilder
             preset={shockPreset}
             custom={customShock}
@@ -264,7 +266,7 @@ export default function App() {
             onChangeCustom={setCustomShock}
           />
 
-          <section className="border-t border-zinc-900 pt-4">
+          <section className="border-t border-white/[0.07] pt-4">
             <div className="mb-2.5 text-[11px] font-medium uppercase tracking-wider text-zinc-500">
               Variable
             </div>
@@ -279,8 +281,8 @@ export default function App() {
                     onClick={() => setChannel(key)}
                     className={`rounded-md border px-2 py-1.5 text-left transition ${
                       active
-                        ? "border-white bg-white text-black"
-                        : "border-zinc-900 bg-black text-zinc-300 hover:border-zinc-700 hover:text-zinc-100"
+                        ? "border-zinc-100 bg-zinc-100 text-zinc-950 shadow-sm"
+                        : "border-white/[0.06] bg-white/[0.02] text-zinc-300 hover:bg-white/[0.05] hover:text-zinc-100"
                     }`}
                   >
                     <div className="font-mono text-[11px] font-semibold">{m.key}</div>
@@ -292,7 +294,7 @@ export default function App() {
               })}
             </div>
 
-            <div className="mt-3.5 flex flex-col gap-1 border-t border-zinc-900 pt-3">
+            <div className="mt-3.5 flex flex-col gap-1 border-t border-white/[0.07] pt-3">
               <div className="mb-1 text-[10px] font-medium uppercase tracking-wider text-zinc-600">
                 Layers
               </div>
@@ -304,7 +306,7 @@ export default function App() {
             </div>
           </section>
 
-          <section className="border-t border-zinc-900 pt-4">
+          <section className="border-t border-white/[0.07] pt-4">
             <div className="mb-2.5 flex items-center justify-between gap-2">
               <span className="text-[11px] font-medium uppercase tracking-wider text-zinc-500">
                 Season
@@ -328,12 +330,12 @@ export default function App() {
                     }}
                     className={`flex items-center justify-between rounded-md px-2.5 py-1.5 text-left text-xs transition ${
                       active
-                        ? "bg-white text-black"
-                        : "text-zinc-400 hover:bg-zinc-900/70 hover:text-zinc-100"
+                        ? "bg-white/[0.09] text-white shadow-[inset_0_1px_0_rgba(255,255,255,0.08)]"
+                        : "text-zinc-400 hover:bg-white/[0.04] hover:text-zinc-100"
                     }`}
                   >
                     <span className="font-medium">{p.name}</span>
-                    <span className="font-mono text-[10px] tabular-nums text-zinc-600">
+                    <span className={`font-mono text-[10px] tabular-nums ${active ? "text-zinc-300" : "text-zinc-600"}`}>
                       {p.doy}
                     </span>
                   </button>
@@ -341,7 +343,7 @@ export default function App() {
               })}
             </div>
 
-            <div className="mt-3 border-t border-zinc-900 pt-3">
+            <div className="mt-3 border-t border-white/[0.07] pt-3">
               <div className="mb-1.5 flex justify-between text-xs">
                 <span className="text-zinc-500">Day of Year</span>
                 <span className="font-mono tabular-nums text-zinc-200">{doy} / 365</span>
@@ -351,6 +353,7 @@ export default function App() {
                 min={1}
                 max={365}
                 value={doy}
+                style={{ "--slider-pct": doyPct } as CSSProperties}
                 onChange={(e) => setDoy(Number(e.target.value))}
                 className="shadcn-slider w-full"
               />
@@ -371,13 +374,13 @@ export default function App() {
               </span>
             </div>
 
-            <div className="flex items-center gap-0.5 rounded-md border border-zinc-900 bg-black p-0.5 text-[11px]">
+            <div className="flex items-center gap-0.5 rounded-md border border-white/[0.08] bg-white/[0.03] p-0.5 text-[11px]">
               <button
                 type="button"
                 onClick={() => setViewMode("single")}
                 className={`rounded px-2.5 py-1 font-medium transition ${
                   viewMode === "single"
-                    ? "bg-white text-black"
+                    ? "bg-zinc-100 text-zinc-950 shadow-sm"
                     : "text-zinc-400 hover:text-zinc-200"
                 }`}
               >
@@ -388,7 +391,7 @@ export default function App() {
                 onClick={() => setViewMode("compare")}
                 className={`rounded px-2.5 py-1 font-medium transition ${
                   viewMode === "compare"
-                    ? "bg-white text-black"
+                    ? "bg-zinc-100 text-zinc-950 shadow-sm"
                     : "text-zinc-400 hover:text-zinc-200"
                 }`}
               >

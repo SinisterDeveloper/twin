@@ -364,7 +364,11 @@ export function IndiaGridMap({
   const unitLabel = isDelta && channel === "t2m" ? (useCelsius ? "°C" : "K") : meta.displayUnit(useCelsius);
 
   return (
-    <div className={`flex flex-col rounded-lg border border-zinc-900 bg-black ${compact ? "p-2.5" : "p-3"}`}>
+    <div
+      className={`surface-panel flex flex-col rounded-xl ${
+        compact ? "p-2.5" : "map-stage-glow p-3.5"
+      }`}
+    >
       {(title || subtitle) && (
         <div className="mb-2 flex items-baseline justify-between gap-2 px-0.5">
           <h3 className={`truncate font-medium tracking-tight text-zinc-100 ${compact ? "text-xs" : "text-[13px]"}`}>
@@ -378,7 +382,7 @@ export function IndiaGridMap({
 
       <div
         ref={viewportRef}
-        className={`relative mx-auto w-full ${compact ? "" : "max-w-[700px]"} aspect-[36/32] overflow-hidden rounded-lg border border-zinc-800/80 bg-slate-950`}
+        className={`relative mx-auto w-full ${compact ? "" : "max-w-[740px]"} aspect-[36/32] overflow-hidden rounded-lg border border-white/10 bg-slate-950 shadow-[0_12px_40px_rgba(0,0,0,0.6)]`}
       >
         <div
           className={`relative h-full w-full ${animateTransform && !isDragging ? "transition-transform duration-150 ease-out" : ""}`}
@@ -641,29 +645,29 @@ export function IndiaGridMap({
               type="button"
               aria-label="Reset zoom"
               onClick={resetZoom}
-              className="flex items-center gap-1 rounded-md border border-zinc-700/80 bg-black/85 px-1.5 py-0.5 font-mono text-[10px] tabular-nums text-zinc-200 shadow-lg backdrop-blur-md transition hover:bg-zinc-900"
+              className="flex items-center gap-1 rounded-md border border-white/15 bg-black/75 px-1.5 py-0.5 font-mono text-[10px] tabular-nums text-zinc-200 shadow-lg backdrop-blur-md transition hover:bg-zinc-900"
             >
               <span>{activeView.zoom.toFixed(1)}×</span>
               <RotateCcw className="h-2.5 w-2.5" />
             </button>
           )}
-          <div className="flex flex-col overflow-hidden rounded-md border border-zinc-700/80 bg-black/85 shadow-lg backdrop-blur-md">
+          <div className="flex flex-col overflow-hidden rounded-md border border-white/15 bg-black/75 shadow-lg backdrop-blur-md">
             <button
               type="button"
               aria-label="Zoom in"
               disabled={activeView.zoom >= MAX_ZOOM}
               onClick={() => zoomBy(ZOOM_STEP)}
-              className="flex h-7 w-7 items-center justify-center text-zinc-200 transition hover:bg-zinc-900 disabled:cursor-not-allowed disabled:opacity-35"
+              className="flex h-7 w-7 items-center justify-center text-zinc-200 transition hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-35"
             >
               <Plus className="h-3.5 w-3.5" />
             </button>
-            <div className="h-px w-full bg-zinc-800" />
+            <div className="h-px w-full bg-white/10" />
             <button
               type="button"
               aria-label="Zoom out"
               disabled={activeView.zoom <= MIN_ZOOM}
               onClick={() => zoomBy(-ZOOM_STEP)}
-              className="flex h-7 w-7 items-center justify-center text-zinc-200 transition hover:bg-zinc-900 disabled:cursor-not-allowed disabled:opacity-35"
+              className="flex h-7 w-7 items-center justify-center text-zinc-200 transition hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-35"
             >
               <Minus className="h-3.5 w-3.5" />
             </button>
@@ -700,9 +704,9 @@ export function IndiaGridMap({
       </div>
 
       {/* Meteorological 5-Tick Colorbar */}
-      <div className={`mx-auto mt-2.5 w-full ${compact ? "" : "max-w-[700px]"}`}>
+      <div className={`mx-auto mt-2.5 w-full ${compact ? "" : "max-w-[740px]"}`}>
         <div
-          className="h-2 w-full rounded-full border border-zinc-800"
+          className="h-2 w-full rounded-full border border-white/10"
           style={{ background: cssLinearGradient(cmap) }}
         />
         <div className="mt-1 flex justify-between font-mono text-[10px] tabular-nums text-zinc-400">
