@@ -21,8 +21,8 @@ const EXPECTED_LEN = EXPECTED_DAYS * NC * NLAT * NLON;
 export async function loadEra5YearDataset(): Promise<Era5YearDataset | null> {
   try {
     const [metaRes, binRes] = await Promise.all([
-      fetch("/era5_year.json", { cache: "force-cache" }),
-      fetch("/era5_year.bin", { cache: "force-cache" }),
+      fetch("/era5_year.json"),
+      fetch("/era5_year.bin"),
     ]);
     if (!metaRes.ok || !binRes.ok) return null;
 

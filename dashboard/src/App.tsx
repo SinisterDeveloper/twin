@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, type CSSProperties } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { DayScrubber } from "./components/DayScrubber";
 import { DEFAULT_MAP_VIEW, IndiaGridMap, type MapViewState } from "./components/IndiaGridMap";
 import { ShockBuilder } from "./components/ShockBuilder";
@@ -91,11 +91,15 @@ export default function App() {
   const [shockResult, setShockResult] = useState<SimulateResponse | null>(null);
   const [loadingSim, setLoadingSim] = useState<boolean>(false);
   const [era5, setEra5] = useState<Era5YearDataset | null>(null);
+  const [era5Loaded, setEra5Loaded] = useState<boolean>(false);
+  const simSeqRef = useRef<number>(0);
 
   useEffect(() => {
     let cancelled = false;
     void loadEra5YearDataset().then((ds) => {
-      if (!cancelled && ds) setEra5(ds);
+      if (cancelled) return;
+      if (ds) setEra5(ds);
+      setEra5Loaded(true);
     });
     return () => {
       cancelled = true;
@@ -126,13 +130,18 @@ export default function App() {
 
   const executeSim = useCallback(async (req: SimulateRequest): Promise<SimulateResponse> => {
     try {
-      return await postSimulate(req);
+      const res = await postSimulate(req);
+      setServerOffline(false);
+      return res;
     } catch {
+      setServerOffline(true);
       return mockSimulate(req);
     }
   }, []);
 
   const runSimulation = useCallback(async () => {
+    if (!era5Loaded) return;
+    const seq = ++simSeqRef.current;
     setLoadingSim(true);
     const sc = doySinCos(doy);
     const baseReq: SimulateRequest = {
@@ -150,17 +159,19 @@ export default function App() {
           perturbation,
         };
         const [bRes, sRes] = await Promise.all([executeSim(baseReq), executeSim(shockReq)]);
+        if (seq !== simSeqRef.current) return;
         setBaseResult(bRes);
         setShockResult(sRes);
       } else {
         const bRes = await executeSim(baseReq);
+        if (seq !== simSeqRef.current) return;
         setBaseResult(bRes);
         setShockResult(null);
       }
     } finally {
-      setLoadingSim(false);
+      if (seq === simSeqRef.current) setLoadingSim(false);
     }
-  }, [initStates, doy, perturbation, executeSim]);
+  }, [era5Loaded, initStates, doy, perturbation, executeSim]);
 
   useEffect(() => {
     void checkServerHealth();
