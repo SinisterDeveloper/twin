@@ -75,5 +75,5 @@ class LocalPDENet(nn.Module):
         feat = self.stem(torch.cat([z_flat, dz_dx, dz_dy, lap, adv_term, pf, s], dim=1))
         for blk, fm in zip(self.blocks, self.films):
             feat = fm(blk(feat), doy_sc)
-        delta = self.head(feat)
+        delta = 3.5 * torch.tanh(self.head(feat) / 3.5)
         return z_last + delta

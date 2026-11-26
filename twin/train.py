@@ -55,6 +55,78 @@ def rollout_step_teacher(
     return torch.stack(preds, dim=1)
 
 
+def _compute_shock_stab_loss(
+    model: torch.nn.Module,
+    z_in: torch.Tensor,
+    sc_seq: torch.Tensor,
+    doy_tgt: torch.Tensor,
+    clim_tr_t: torch.Tensor,
+    anom_std_t: torch.Tensor,
+    phys_std_t: torch.Tensor,
+    batch_idx: int,
+    max_samples: int = 4,
+) -> torch.Tensor:
+    """Evaluate full-horizon shock stability on high-moisture/monsoon states in the batch."""
+    n_s = min(max_samples, z_in.shape[0])
+    h, w = z_in.shape[-2], z_in.shape[-1]
+    doy_last = (doy_tgt[:, 0] - 1) % 365
+    clim_last = clim_tr_t[doy_last]  # [B, 6, H, W]
+    phys_tr_last = z_in[:, -1] * anom_std_t.view(1, 6, 1, 1) + clim_last
+    tp_last = torch.expm1(torch.clamp(phys_tr_last[:, 1], 0.0, 5.8))
+    tcwv_last = torch.clamp(phys_tr_last[:, 5], min=0.0)
+
+    # Prioritize wettest / highest-moisture batch elements plus 1 random sample
+    wet_score = tp_last.amax(dim=(-2, -1)) + 0.5 * tcwv_last.amax(dim=(-2, -1))
+    n_wet = max(1, n_s - 1) if n_s > 1 else 1
+    top_idx = torch.topk(wet_score, k=n_wet).indices
+    if n_s > n_wet:
+        rand_idx = torch.randint(0, z_in.shape[0], (n_s - n_wet,), device=z_in.device)
+        sel = torch.cat([top_idx, rand_idx], dim=0)
+    else:
+        sel = top_idx
+
+    z_sel = z_in[sel]
+    sc_sel = sc_seq[sel]
+    doy_sel = doy_tgt[sel]
+    phys_tr_sel = phys_tr_last[sel]
+    tcwv_sel = tcwv_last[sel]
+
+    with torch.no_grad():
+        z_base = rollout_step_teacher(model, z_sel, sc_sel, pushforward_noise=0.0)
+
+    z_in_p = z_sel.clone()
+    rh = int(torch.randint(10, 15, (1,)))
+    cw = int(torch.randint(10, 15, (1,)))
+    if batch_idx % 4 == 0:
+        # Center box near peak tcwv of the wettest selected sample
+        peak_flat = int(torch.argmax(tcwv_sel[0].reshape(-1)))
+        pr, pc = divmod(peak_flat, w)
+        r0 = max(0, min(h - rh, pr - rh // 2))
+        c0 = max(0, min(w - cw, pc - cw // 2))
+    else:
+        # Random box biased toward southern ocean latitudes (r0 <= 18)
+        r0 = int(torch.randint(0, min(19, h - rh + 1), (1,)))
+        c0 = int(torch.randint(0, w - cw + 1, (1,)))
+
+    if batch_idx % 8 != 6:
+        # Warm-ocean-like multiplicative moisture + warming shock
+        d_t2m = float(2.5 + 1.0 * torch.rand(1))
+        frac_tcwv = float(0.14 + 0.06 * torch.rand(1))
+        d_tcwv = frac_tcwv * tcwv_sel[:, r0 : r0 + rh, c0 : c0 + cw]
+        z_in_p[:, -1, 0, r0 : r0 + rh, c0 : c0 + cw] += d_t2m / anom_std_t[0]
+        z_in_p[:, -1, 5, r0 : r0 + rh, c0 : c0 + cw] += d_tcwv / anom_std_t[5]
+    else:
+        # Monsoon-stall-like wind reduction shock
+        frac_w = float(0.35 + 0.10 * torch.rand(1))
+        u_sel = phys_tr_sel[:, 2, r0 : r0 + rh, c0 : c0 + cw]
+        v_sel = phys_tr_sel[:, 3, r0 : r0 + rh, c0 : c0 + cw]
+        z_in_p[:, -1, 2, r0 : r0 + rh, c0 : c0 + cw] -= (frac_w * u_sel) / anom_std_t[2]
+        z_in_p[:, -1, 3, r0 : r0 + rh, c0 : c0 + cw] -= (frac_w * v_sel) / anom_std_t[3]
+
+    z_pert = rollout_step_teacher(model, z_in_p, sc_sel, pushforward_noise=0.0)
+    return shock_stability_loss(z_base, z_pert, doy_sel, clim_tr_t, anom_std_t, phys_std_t)
+
+
 def run_training(
     nc_path: Path,
     artifacts_dir: Path,
@@ -72,11 +144,12 @@ def run_training(
     w_csi: float = 0.25,
     w_grad: float = 0.15,
     w_var: float = 0.15,
-    w_stab: float = 0.15,
+    w_stab: float = 0.40,
     pushforward_noise: float = 0.03,
     ema_decay: float = 0.995,
     seed: int = 42,
     amp: bool = True,
+    resume_ckpt: Path | None = None,
 ) -> Path:
     torch.manual_seed(seed)
     np.random.seed(seed)
@@ -108,6 +181,9 @@ def run_training(
         clim_phys_coef=clim_phys_coef,
         anom_std=anom_std,
     ).to(device)
+    if resume_ckpt is not None:
+        ckpt = torch.load(resume_ckpt, map_location=device, weights_only=False)
+        model.load_state_dict(ckpt["model"])
     ema = EMA(model, decay=ema_decay)
 
     criterion = MonsoonLoss(
@@ -135,7 +211,7 @@ def run_training(
 
     best_ckpt = out_dir / f"{model_name}_best.pt"
     best_val_loss = float("inf")
-    best_r1_score = -1.0
+    best_r1_key = (-1, -1.0, float("-inf"))
 
     # Reusable eval model shell for EMA evaluation
     eval_model = copy.deepcopy(model).eval()
@@ -155,15 +231,15 @@ def run_training(
                 losses.append(float(loss))
         return float(np.mean(losses)) if losses else 0.0
 
-    def _eval_r1_score() -> float:
+    def _eval_r1_score() -> tuple[bool, float, float]:
         if va_batcher is None:
-            return 0.0
+            return False, 0.0, 0.0
         eval_model.load_state_dict(ema.shadow)
         eval_model.eval()
         pred_fn = make_predictor_from_model(artifacts_dir, eval_model, device)
         val_start = dates[va_mask][0].isoformat()
-        res = evaluate_predictor(nc_path, artifacts_dir, pred_fn, val_start=val_start, val_end=val_end, n_causality_windows=3)
-        return float(res["automated_score_of_70"])
+        res = evaluate_predictor(nc_path, artifacts_dir, pred_fn, val_start=val_start, val_end=val_end, n_causality_windows=10)
+        return bool(res["all_shocks_pass"]), float(res["automated_score_of_70"]), float(res["worst_max_z"])
 
     def _save_ckpt(stage: int, val_loss: float, val_score: float) -> None:
         torch.save(
@@ -223,20 +299,8 @@ def run_training(
                     pred = rollout_step_teacher(model, z_in, sc_seq, pushforward_noise=pushforward_noise)
                     loss, _ = criterion(pred, z_tgt, doy_tgt, phys_tgt)
                     if w_stab > 0.0 and b_idx % 2 == 0:
-                        n_s = min(8, z_in.shape[0])
-                        s_stab = min(2, steps)
-                        z_in_p = z_in[:n_s].clone()
-                        rh = int(torch.randint(6, 13, (1,)))
-                        cw = int(torch.randint(6, 13, (1,)))
-                        r0 = int(torch.randint(0, 32 - rh + 1, (1,)))
-                        c0 = int(torch.randint(0, 36 - cw + 1, (1,)))
-                        d_t2m = float(1.5 + 1.7 * torch.rand(1))
-                        d_tcwv = float(3.0 + 6.0 * torch.rand(1))
-                        z_in_p[:, -1, 0, r0 : r0 + rh, c0 : c0 + cw] += d_t2m / float(anom_std[0])
-                        z_in_p[:, -1, 5, r0 : r0 + rh, c0 : c0 + cw] += d_tcwv / float(anom_std[5])
-                        z_pert = rollout_step_teacher(model, z_in_p, sc_seq[:n_s, :s_stab], pushforward_noise=0.0)
-                        loss = loss + w_stab * shock_stability_loss(
-                            pred[:n_s, :s_stab].detach(), z_pert, doy_tgt[:n_s, :s_stab], clim_tr_t, anom_std_t, phys_std_t
+                        loss = loss + w_stab * _compute_shock_stab_loss(
+                            model, z_in, sc_seq, doy_tgt, clim_tr_t, anom_std_t, phys_std_t, b_idx
                         )
                 scaler.scale(loss).backward()
                 scaler.unscale_(opt)
@@ -250,11 +314,16 @@ def run_training(
             if ep % 5 == 0 or ep == epochs_stage2:
                 val_loss = _eval_val_loss(rollout_schedule[-1])
                 if va_batcher is not None:
-                    r1_score = _eval_r1_score()
-                    if r1_score >= best_r1_score:
-                        best_r1_score = r1_score
+                    all_pass, r1_score, worst_max_z = _eval_r1_score()
+                    cand_key = (int(all_pass), r1_score, -worst_max_z)
+                    if cand_key >= best_r1_key:
+                        best_r1_key = cand_key
                         _save_ckpt(2, val_loss, r1_score)
-                    print(f"[S2 {ep:02d}/{epochs_stage2} steps={steps}] train={np.mean(tr_losses):.4f} val_10={val_loss:.4f} R1={r1_score:.2f}/70", flush=True)
+                    print(
+                        f"[S2 {ep:02d}/{epochs_stage2} steps={steps}] train={np.mean(tr_losses):.4f} "
+                        f"val_10={val_loss:.4f} R1={r1_score:.2f}/70 shocks_pass={all_pass} max_z={worst_max_z:.2f}",
+                        flush=True,
+                    )
                 else:
                     tr_m = float(np.mean(tr_losses))
                     if tr_m <= best_val_s2:
@@ -278,20 +347,8 @@ def run_training(
                     pred = rollout_step_teacher(model, z_in, sc_seq, pushforward_noise=pushforward_noise * 0.5)
                     loss, _ = criterion(pred, z_tgt, doy_tgt, phys_tgt)
                     if w_stab > 0.0 and b_idx % 2 == 0:
-                        n_s = min(8, z_in.shape[0])
-                        s_stab = min(2, final_steps)
-                        z_in_p = z_in[:n_s].clone()
-                        rh = int(torch.randint(6, 13, (1,)))
-                        cw = int(torch.randint(6, 13, (1,)))
-                        r0 = int(torch.randint(0, 32 - rh + 1, (1,)))
-                        c0 = int(torch.randint(0, 36 - cw + 1, (1,)))
-                        d_t2m = float(1.5 + 1.7 * torch.rand(1))
-                        d_tcwv = float(3.0 + 6.0 * torch.rand(1))
-                        z_in_p[:, -1, 0, r0 : r0 + rh, c0 : c0 + cw] += d_t2m / float(anom_std[0])
-                        z_in_p[:, -1, 5, r0 : r0 + rh, c0 : c0 + cw] += d_tcwv / float(anom_std[5])
-                        z_pert = rollout_step_teacher(model, z_in_p, sc_seq[:n_s, :s_stab], pushforward_noise=0.0)
-                        loss = loss + w_stab * shock_stability_loss(
-                            pred[:n_s, :s_stab].detach(), z_pert, doy_tgt[:n_s, :s_stab], clim_tr_t, anom_std_t, phys_std_t
+                        loss = loss + w_stab * _compute_shock_stab_loss(
+                            model, z_in, sc_seq, doy_tgt, clim_tr_t, anom_std_t, phys_std_t, b_idx
                         )
                 scaler.scale(loss).backward()
                 scaler.unscale_(opt)
@@ -305,11 +362,16 @@ def run_training(
             if ep % 5 == 0 or ep == epochs_stage3:
                 val_loss = _eval_val_loss(final_steps)
                 if va_batcher is not None:
-                    r1_score = _eval_r1_score()
-                    if r1_score >= best_r1_score:
-                        best_r1_score = r1_score
+                    all_pass, r1_score, worst_max_z = _eval_r1_score()
+                    cand_key = (int(all_pass), r1_score, -worst_max_z)
+                    if cand_key >= best_r1_key:
+                        best_r1_key = cand_key
                         _save_ckpt(3, val_loss, r1_score)
-                    print(f"[S3 {ep:02d}/{epochs_stage3} steps={final_steps}] train={np.mean(tr_losses):.4f} val_10={val_loss:.4f} R1={r1_score:.2f}/70", flush=True)
+                    print(
+                        f"[S3 {ep:02d}/{epochs_stage3} steps={final_steps}] train={np.mean(tr_losses):.4f} "
+                        f"val_10={val_loss:.4f} R1={r1_score:.2f}/70 shocks_pass={all_pass} max_z={worst_max_z:.2f}",
+                        flush=True,
+                    )
                 else:
                     tr_m = float(np.mean(tr_losses))
                     if tr_m <= best_val_s3:

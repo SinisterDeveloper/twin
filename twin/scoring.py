@@ -5,6 +5,7 @@ import numpy as np
 from .contract import (
     BOX_ARABIAN_SEA,
     BOX_BAY_OF_BENGAL,
+    CHANNELS,
     LAT,
     NC,
     NLAT,
@@ -106,8 +107,12 @@ def causality_checks(base: np.ndarray, shock: np.ndarray, box, std: np.ndarray) 
     if not res["finite"]:
         return {**res, "nonzero": False, "localized": False, "propagates": False, "stable": False}
     z = np.abs(d / std[None, :, None, None])
-    res["nonzero"] = bool(z.max() >= NONZERO_MIN)
-    res["stable"] = bool(z.max() <= STABLE_MAX_STD)
+    max_z = float(z.max())
+    max_ch = CHANNELS[int(np.unravel_index(int(np.argmax(z)), z.shape)[1])]
+    res["max_z"] = round(max_z, 4)
+    res["max_z_channel"] = max_ch
+    res["nonzero"] = bool(max_z >= NONZERO_MIN)
+    res["stable"] = bool(max_z <= STABLE_MAX_STD)
     e = _energy(d, std)
     steps = e.shape[0]
     near = near_mask(box)

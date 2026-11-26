@@ -308,6 +308,7 @@ def evaluate_predictor(
 
     worst_near = float(min((r.get("near_frac_day1", 0.0) for r in shock_res), default=0.0))
     worst_far = float(max((r.get("far_frac_max", 1.0) for r in shock_res), default=1.0))
+    worst_max_z = float(max((r.get("max_z", 0.0) for r in shock_res), default=0.0))
     all_shocks_pass = bool(null_ok and all(r["nonzero"] and r["localized"] and r["propagates"] and r["stable"] for r in shock_res))
 
     return {
@@ -326,7 +327,8 @@ def evaluate_predictor(
         "all_shocks_pass": all_shocks_pass,
         "worst_near_frac_day1": round(worst_near, 4),
         "worst_far_frac_max": round(worst_far, 4),
-        "shocks": shock_res[:6],
+        "worst_max_z": round(worst_max_z, 4),
+        "shocks": shock_res,
         "automated_score_of_70": round(total_auto, 2),
     }
 

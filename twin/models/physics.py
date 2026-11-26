@@ -115,8 +115,8 @@ class PhysicsFeatureBlock(nn.Module):
             z_m1 = zf[:, -2]
             z_m2 = zf[:, -3]
 
-            dz1 = z_t - z_m1
-            dz0 = z_m1 - z_m2
+            dz1 = 4.0 * torch.tanh((z_t - z_m1) / 4.0)
+            dz0 = 4.0 * torch.tanh((z_m1 - z_m2) / 4.0)
 
             # Reconstruct true physical u10, v10, msl (shifted by 101325 Pa), tcwv
             clim_phys = eval_harmonic_4(doy_sc.float(), self.clim_phys_coef.float(), shift_minus_one=True)

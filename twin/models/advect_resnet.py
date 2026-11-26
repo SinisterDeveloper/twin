@@ -109,5 +109,5 @@ class AdvectResNet(nn.Module):
         h = self.stem(torch.cat([z_flat, z_adv, pf, s], dim=1))
         for blk in self.blocks:
             h = blk(h, doy_sc)
-        delta = self.head(h)
+        delta = 3.5 * torch.tanh(self.head(h) / 3.5)
         return z_last + delta

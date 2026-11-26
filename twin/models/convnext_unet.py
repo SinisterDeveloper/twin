@@ -112,5 +112,5 @@ class ConvNeXtUNet(nn.Module):
         out = self.fuse(torch.cat([h1, u], dim=1))
         for blk in self.dec1:
             out = blk(out)
-        delta = self.head(out)
+        delta = 3.5 * torch.tanh(self.head(out) / 3.5)
         return z_last + delta

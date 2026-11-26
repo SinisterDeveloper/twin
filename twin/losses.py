@@ -69,7 +69,7 @@ class MonsoonLoss(nn.Module):
         # Reconstruct physical predictions carefully in float32 for rain & Day 5-10 anti-blur
         clim_sel = self.clim_tr[doy_tgt]  # [B, S, 6, 32, 36]
         pred_tr = zp * self.anom_std + clim_sel
-        tp_pred = torch.expm1(torch.clamp(pred_tr[:, :, 1], min=0.0, max=8.0))
+        tp_pred = torch.expm1(torch.clamp(pred_tr[:, :, 1], min=0.0, max=5.8))
         tp_true = pt[:, :, 1]
 
         # 2. Heavy-rain emphasis in z-space + physical-space Jensen-bias correction
@@ -101,7 +101,7 @@ class MonsoonLoss(nn.Module):
         if self.w_var > 0:
             s0 = 4 if steps >= 5 else 0
             late_tr = pred_tr[:, s0:]
-            tp_late = torch.expm1(torch.clamp(late_tr[:, :, 1:2], min=0.0, max=8.0))
+            tp_late = torch.expm1(torch.clamp(late_tr[:, :, 1:2], min=0.0, max=5.8))
             pred_phys_late = torch.cat([late_tr[:, :, 0:1], tp_late, late_tr[:, :, 2:]], dim=2)
             true_phys_late = pt[:, s0:]
             vp = pred_phys_late.var(dim=(-2, -1), unbiased=False)
@@ -142,10 +142,17 @@ def shock_stability_loss(
     a_std = anom_std.view(1, 1, 6, 1, 1).float()
     p_std = phys_std.view(1, 1, 6, 1, 1).float()
 
-    tp_base = torch.expm1(torch.clamp(zb[:, :, 1] * a_std[:, :, 1] + clim_sel[:, :, 1], 0.0, 8.0))
-    tp_pert = torch.expm1(torch.clamp(zp[:, :, 1] * a_std[:, :, 1] + clim_sel[:, :, 1], 0.0, 8.0))
+    tp_base = torch.expm1(torch.clamp(zb[:, :, 1] * a_std[:, :, 1] + clim_sel[:, :, 1], 0.0, 5.8))
+    tp_pert = torch.expm1(torch.clamp(zp[:, :, 1] * a_std[:, :, 1] + clim_sel[:, :, 1], 0.0, 5.8))
     tp_z = torch.abs(tp_pert - tp_base) / phys_std[1].float()
     all_z = torch.abs(zp - zb) * a_std / p_std
     tp_peak = tp_z.amax(dim=(-2, -1))
     all_peak = all_z.amax(dim=(-2, -1))
-    return F.relu(tp_peak - 3.0).pow(2).mean() + 0.25 * F.relu(all_peak - 3.5).pow(2).mean()
+    tp_worst = tp_peak.amax(dim=1)
+    all_worst = all_peak.amax(dim=(1, 2))
+    return (
+        F.relu(tp_peak - 2.5).pow(2).mean()
+        + 0.50 * F.relu(tp_worst - 3.2).pow(2).mean()
+        + 0.35 * F.relu(all_peak - 3.0).pow(2).mean()
+        + 0.25 * F.relu(all_worst - 3.5).pow(2).mean()
+    )

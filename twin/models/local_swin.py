@@ -114,5 +114,5 @@ class LocalWeatherFormer(nn.Module):
         feat = self.stem(torch.cat([z_flat, pf, s], dim=1))
         feat = self.block1(feat, doy_sc)
         feat = self.block2(feat, doy_sc)
-        delta = self.head(feat)
+        delta = 3.5 * torch.tanh(self.head(feat) / 3.5)
         return z_last + delta

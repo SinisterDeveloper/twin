@@ -277,10 +277,11 @@ def main(argv=None) -> int:
     t.add_argument("--w-csi", type=float, default=0.25)
     t.add_argument("--w-grad", type=float, default=0.15)
     t.add_argument("--w-var", type=float, default=0.15)
-    t.add_argument("--w-stab", type=float, default=0.15)
+    t.add_argument("--w-stab", type=float, default=0.40)
     t.add_argument("--pushforward-noise", type=float, default=0.03)
     t.add_argument("--seed", type=int, default=42)
     t.add_argument("--no-amp", action="store_true")
+    t.add_argument("--resume-ckpt", type=Path, default=None)
 
     e = sp.add_parser("eval", help="Evaluate checkpoints or ONNX ensemble on 25-window + multi-season shock benchmark")
     e.add_argument("--nc", type=Path, default=Path("data/india_climate_train.nc"))
@@ -372,6 +373,7 @@ def main(argv=None) -> int:
             pushforward_noise=args.pushforward_noise,
             seed=args.seed,
             amp=not args.no_amp,
+            resume_ckpt=args.resume_ckpt,
         )
         print(f"Best checkpoint saved: {ckpt}")
     elif args.cmd == "eval":

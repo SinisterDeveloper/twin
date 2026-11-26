@@ -204,12 +204,91 @@ def test_shock_stability_loss_backward():
     clim_tr = torch.zeros(365, NC, NLAT, NLON, dtype=torch.float32)
     anom_std = torch.tensor([1.7, 0.7, 1.5, 1.4, 280.0, 6.0], dtype=torch.float32)
     phys_std = torch.tensor([13.4, 7.5, 2.9, 2.4, 618.0, 20.4], dtype=torch.float32)
-    z_base = torch.zeros(4, 2, NC, NLAT, NLON, dtype=torch.float32)
-    z_pert = torch.randn(4, 2, NC, NLAT, NLON, dtype=torch.float32, requires_grad=True)
-    doy_tgt = torch.randint(0, 365, (4, 2))
+    z_base = torch.zeros(4, SCORE_STEPS, NC, NLAT, NLON, dtype=torch.float32)
+    # Below-threshold perturbation gives exact zero penalty
+    z_small = z_base + 0.1
+    doy_tgt = torch.randint(0, 365, (4, SCORE_STEPS))
+    loss_small = shock_stability_loss(z_base, z_small, doy_tgt, clim_tr, anom_std, phys_std)
+    assert float(loss_small) == 0.0
+
+    # Large perturbation over 10-step horizon yields positive loss and finite gradients
+    z_pert = torch.randn(4, SCORE_STEPS, NC, NLAT, NLON, dtype=torch.float32, requires_grad=True)
+    with torch.no_grad():
+        z_pert[:, -1, 1] += 5.5
     loss = shock_stability_loss(z_base, z_pert, doy_tgt, clim_tr, anom_std, phys_std)
+    assert float(loss) > 0.0
     loss.backward()
     assert torch.isfinite(loss) and z_pert.grad is not None and torch.isfinite(z_pert.grad).all()
+
+
+def test_models_soft_bounded_under_extreme_shock():
+    torch = pytest.importorskip("torch")
+    from twin.models import MODEL_NAMES, build_model
+
+    static = np.zeros((6, NLAT, NLON), dtype=np.float32)
+    uv_coef = np.zeros((9, 2, NLAT, NLON), dtype=np.float32)
+    anom_std = np.array([1.7, 0.7, 1.5, 1.4, 280.0, 6.1], dtype=np.float32)
+
+    torch.manual_seed(3)
+    z_hist = torch.randn(1, T_IN, NC, NLAT, NLON, dtype=torch.float32)
+    z_hist[0, -1, 0, 8:16, 8:16] += 20.0
+    z_hist[0, -1, 5, 8:16, 8:16] += 20.0
+    sc = torch.tensor([[0.0, 1.0]], dtype=torch.float32)
+
+    for name in MODEL_NAMES:
+        m = build_model(name, static_grid=static, clim_uv_coef=uv_coef, anom_std=anom_std).eval()
+        with torch.no_grad():
+            torch.nn.init.normal_(m.head.weight, std=1.0)
+            z_next = m(z_hist, sc)
+        assert torch.isfinite(z_next).all(), f"{name} non-finite under extreme shock"
+        max_delta = float(torch.abs(z_next - z_hist[:, -1]).max())
+        assert max_delta <= 3.5 + 1e-5, f"{name} exceeded residual bound: {max_delta}"
+
+
+def test_causality_checks_reports_max_z():
+    rng = np.random.default_rng(11)
+    base = rng.normal(0.0, 1.0, size=(SCORE_STEPS, NC, NLAT, NLON)).astype(np.float32)
+    shock = base.copy()
+    near = twin_scoring.near_mask(BOX_BAY_OF_BENGAL, dilate=0)
+    shock[0, 1, near] += 30.0
+    shock[5, 1, near] += 40.0
+    std = twin_scoring.STD_DEFAULT.copy()
+
+    res_t = twin_scoring.causality_checks(base, shock, BOX_BAY_OF_BENGAL, std)
+    res_r = r1_scoring.causality_checks(base, shock, BOX_BAY_OF_BENGAL, std)
+    assert res_t["max_z"] == pytest.approx(5.0, abs=1e-4)
+    assert res_t["max_z_channel"] == "tp"
+    for k in ("finite", "nonzero", "stable", "localized", "no_teleport", "propagates"):
+        assert res_t[k] == res_r[k]
+
+
+def test_compute_shock_stab_loss_runs_full_horizon():
+    torch = pytest.importorskip("torch")
+    from twin.models import build_model
+    from twin.train import _compute_shock_stab_loss
+
+    static = np.zeros((6, NLAT, NLON), dtype=np.float32)
+    anom_std = np.array([1.7, 0.7, 1.5, 1.4, 280.0, 6.1], dtype=np.float32)
+    phys_std = twin_scoring.STD_DEFAULT.copy()
+    clim_tr = torch.zeros(365, NC, NLAT, NLON, dtype=torch.float32)
+    clim_tr[:, 5] = 45.0
+    anom_std_t = torch.from_numpy(anom_std)
+    phys_std_t = torch.from_numpy(phys_std)
+
+    m = build_model("convnext_unet", static_grid=static, anom_std=anom_std).train()
+    with torch.no_grad():
+        torch.nn.init.normal_(m.head.weight, std=0.05)
+
+    z_in = torch.randn(6, T_IN, NC, NLAT, NLON, dtype=torch.float32) * 0.5
+    sc_seq = torch.tensor([[[0.0, 1.0]] * 4] * 6, dtype=torch.float32)
+    doy_tgt = torch.full((6, 4), 180, dtype=torch.long)
+
+    for b_idx in (0, 6):
+        m.zero_grad()
+        loss = _compute_shock_stab_loss(m, z_in, sc_seq, doy_tgt, clim_tr, anom_std_t, phys_std_t, b_idx, max_samples=2)
+        assert torch.isfinite(loss)
+        loss.backward()
+        assert m.head.weight.grad is not None and torch.isfinite(m.head.weight.grad).all()
 
 
 def test_strict_zero_far_field_leakage():
