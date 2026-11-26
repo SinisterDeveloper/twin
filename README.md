@@ -35,8 +35,13 @@ python -m twin.cli export-onnx --ckpt runs/b/advect_resnet_best.pt --out artifac
 python serve.py --port 8000
 ```
 
-## Verification
+## Verification (Bundled Kit)
+`monsoon_r1/` (`schema_validator`, `scoring`, `contract`, `client`), `docs/R1_CONTRACT.md`, and `NOTICE` are bundled in this repo so validation runs out of the box:
 ```bash
 python -m monsoon_r1.schema_validator http://localhost:8000
+```
+To run the organizer's `repo_scan` externally (without placing `repo_scan.py`'s blocklist regexes inside the submitted repo):
+```bash
+pip install git+https://github.com/OfficialAbhinavSingh/yug-monsoon-kit.git
 python -c "from monsoon_r1.repo_scan import scan; import json; print(json.dumps(scan('.'), indent=2))"
 ```
