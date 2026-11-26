@@ -1,8 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Minus, Plus, RotateCcw } from "lucide-react";
 import {
-  BOX_ARABIAN_SEA,
-  BOX_BAY_OF_BENGAL,
   CHANNEL_META,
   CHANNELS,
   LAT,
@@ -55,7 +53,6 @@ interface IndiaGridMapProps {
   useCelsius: boolean;
   showVectors: boolean;
   smoothGrid: boolean;
-  showBoxes: boolean;
   showCities?: boolean;
   showStates?: boolean;
   mode?: "field" | "delta";
@@ -97,7 +94,6 @@ export function IndiaGridMap({
   useCelsius,
   showVectors,
   smoothGrid,
-  showBoxes,
   showCities = true,
   showStates = true,
   mode = "field",
@@ -363,7 +359,7 @@ export function IndiaGridMap({
     onCellClick(LAT[i], LON[j]);
   };
 
-  const boxes = showBoxes ? [BOX_ARABIAN_SEA, BOX_BAY_OF_BENGAL] : [];
+  const boxes = highlightBox ? [highlightBox] : [];
   const ticks = [0, 0.25, 0.5, 0.75, 1].map((f) => rMin + f * (rMax - rMin));
   const unitLabel = isDelta && channel === "t2m" ? (useCelsius ? "°C" : "K") : meta.displayUnit(useCelsius);
 

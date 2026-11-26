@@ -68,7 +68,6 @@ export default function App() {
   const [useCelsius, setUseCelsius] = useState<boolean>(true);
   const [showVectors, setShowVectors] = useState<boolean>(true);
   const [smoothGrid, setSmoothGrid] = useState<boolean>(true);
-  const [showBoxes, setShowBoxes] = useState<boolean>(true);
   const [showCities, setShowCities] = useState<boolean>(true);
   const [showStates, setShowStates] = useState<boolean>(true);
   const [mapView, setMapView] = useState<MapViewState>(DEFAULT_MAP_VIEW);
@@ -302,7 +301,6 @@ export default function App() {
               <SwitchRow label="Smooth Radar Grid" checked={smoothGrid} onChange={setSmoothGrid} />
               <SwitchRow label="City Labels" checked={showCities} onChange={setShowCities} />
               <SwitchRow label="State Borders" checked={showStates} onChange={setShowStates} />
-              <SwitchRow label="Ocean Boxes" checked={showBoxes} onChange={setShowBoxes} />
             </div>
           </section>
 
@@ -406,7 +404,6 @@ export default function App() {
               useCelsius={useCelsius}
               showVectors={showVectors}
               smoothGrid={smoothGrid}
-              showBoxes={showBoxes}
               showCities={showCities}
               showStates={showStates}
               highlightBox={highlightBox}
@@ -425,7 +422,6 @@ export default function App() {
                 useCelsius={useCelsius}
                 showVectors={showVectors}
                 smoothGrid={smoothGrid}
-                showBoxes={showBoxes}
                 showCities={showCities}
                 showStates={showStates}
                 view={mapView}
@@ -440,7 +436,6 @@ export default function App() {
                 useCelsius={useCelsius}
                 showVectors={showVectors}
                 smoothGrid={smoothGrid}
-                showBoxes={showBoxes}
                 showCities={showCities}
                 showStates={showStates}
                 highlightBox={highlightBox}
@@ -458,7 +453,6 @@ export default function App() {
                 useCelsius={useCelsius}
                 showVectors={false}
                 smoothGrid={smoothGrid}
-                showBoxes={showBoxes}
                 showCities={showCities}
                 showStates={showStates}
                 highlightBox={highlightBox}
