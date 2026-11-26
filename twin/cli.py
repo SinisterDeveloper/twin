@@ -11,18 +11,27 @@ from pathlib import Path
 
 import numpy as np
 
-from .contract import CHANNELS, NC, NLAT, NLON, SCORE_STEPS, T_IN, doy_sincos
-from .data import download_dataset, prepare_artifacts
-from .evaluate import evaluate_predictor, make_predictor
-from .export_onnx import export_checkpoint_to_onnx
-from .models import build_model
-from .train import run_training
+from .contract import CHANNELS, LAT, LON, NC, NLAT, NLON, SCORE_STEPS, T_IN, doy_sincos, encode_list
 
 
-def _http_json(url: str, payload: dict | None = None, timeout: float = 30.0) -> tuple[dict, float]:
-    data = json.dumps(payload).encode("utf-8") if payload is not None else None
-    headers = {"Content-Type": "application/json"} if data is not None else {}
-    req = urllib.request.Request(url, data=data, headers=headers, method="POST" if data is not None else "GET")
+def _http_json(
+    url: str,
+    payload: dict | None = None,
+    timeout: float = 30.0,
+    method: str | None = None,
+) -> tuple[dict, float]:
+    if method is None:
+        method = "POST" if payload is not None else "GET"
+    if payload is not None:
+        data = json.dumps(payload).encode("utf-8")
+        headers = {"Content-Type": "application/json"}
+    elif method == "POST":
+        data = b""
+        headers = {}
+    else:
+        data = None
+        headers = {}
+    req = urllib.request.Request(url, data=data, headers=headers, method=method)
     t0 = time.perf_counter()
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         body = json.loads(resp.read().decode("utf-8"))
@@ -55,16 +64,20 @@ def _base_init_states(doy: int, artifacts_dir: Path = Path("artifacts")) -> np.n
     return x
 
 
-def _build_perturbation(args) -> np.ndarray | None:
+def _wire_encode(arr: np.ndarray, wire: str):
+    return encode_list(arr) if wire == "lists" else _encode_arr(arr)
+
+
+def _build_perturbation(args, last_state: np.ndarray) -> np.ndarray | None:
     if args.shock in ("none", "null"):
         return np.zeros((NC, NLAT, NLON), dtype=np.float32) if args.shock == "null" else None
     if args.shock in ("warm_ocean", "monsoon_stall"):
-        from monsoon_r1.scoring import make_shock
-        return make_shock(args.shock).astype(np.float32)
-    # custom localized Gaussian shock
+        from monsoon_r1.scoring import STD_DEFAULT, make_shock
+        return make_shock(args.shock, last_state, STD_DEFAULT).astype(np.float32)
+    # custom localized Gaussian shock on LAT[0]=6.5..37.5, LON[0]=65.5..100.5
     ch = CHANNELS.index(args.shock_channel) if args.shock_channel in CHANNELS else int(args.shock_channel)
-    lat_i = np.clip(args.shock_lat - 6.0, 0.0, float(NLAT - 1))
-    lon_i = np.clip(args.shock_lon - 68.0, 0.0, float(NLON - 1))
+    lat_i = np.clip(args.shock_lat - float(LAT[0]), 0.0, float(NLAT - 1))
+    lon_i = np.clip(args.shock_lon - float(LON[0]), 0.0, float(NLON - 1))
     yy, xx = np.meshgrid(np.arange(NLAT, dtype=np.float32), np.arange(NLON, dtype=np.float32), indexing="ij")
     r2 = ((yy - lat_i) ** 2 + (xx - lon_i) ** 2) / max(args.shock_radius ** 2, 1e-3)
     pert = np.zeros((NC, NLAT, NLON), dtype=np.float32)
@@ -75,13 +88,13 @@ def _build_perturbation(args) -> np.ndarray | None:
 def _run_simulate_cli(args) -> int:
     url = args.url.rstrip("/")
     init_states = _base_init_states(args.doy, args.artifacts_dir)
-    sc = list(doy_sincos(np.array([args.doy], dtype=np.int64))[0].astype(float))
-    pert = _build_perturbation(args)
+    sc = doy_sincos(int(args.doy))
+    pert = _build_perturbation(args, init_states[-1])
     payload = {
-        "init_states": _encode_arr(init_states),
+        "init_states": _wire_encode(init_states, args.wire),
         "doy_sincos": sc,
         "steps": args.days,
-        "perturbation": _encode_arr(pert) if pert is not None else None,
+        "perturbation": _wire_encode(pert, args.wire) if pert is not None else None,
     }
     resp, ms = _http_json(f"{url}/simulate", payload)
     rollout = _decode_arr(resp["rollout"] if "rollout" in resp else resp["states"])
@@ -89,10 +102,10 @@ def _run_simulate_cli(args) -> int:
     delta = None
     if args.compare_null:
         base_payload = {
-            "init_states": _encode_arr(init_states),
+            "init_states": _wire_encode(init_states, args.wire),
             "doy_sincos": sc,
             "steps": args.days,
-            "perturbation": _encode_arr(np.zeros((NC, NLAT, NLON), dtype=np.float32)),
+            "perturbation": _wire_encode(np.zeros((NC, NLAT, NLON), dtype=np.float32), args.wire),
         }
         base_resp, _ = _http_json(f"{url}/simulate", base_payload)
         base_rollout = _decode_arr(base_resp["rollout"] if "rollout" in base_resp else base_resp["states"])
@@ -101,6 +114,7 @@ def _run_simulate_cli(args) -> int:
     ch_indices = range(NC) if args.var == "all" else [CHANNELS.index(args.var)]
     summary = {
         "url": url,
+        "wire": args.wire,
         "shock": args.shock,
         "days": args.days,
         "doy": args.doy,
@@ -138,24 +152,44 @@ def _run_simulate_cli(args) -> int:
 
 
 def _run_verify_cli(args) -> int:
+    from monsoon_r1.scoring import STD_DEFAULT, make_shock, null_consistent, validity
+
     url = args.url.rstrip("/")
-    health, h_ms = _http_json(f"{url}/health")
+    health, h_ms = _http_json(f"{url}/health", method="POST")
+    init_states = _base_init_states(180, args.artifacts_dir)
+    sc = doy_sincos(180)
+
+    # Unperturbed baseline for null-shock consistency check
+    base_payload = {
+        "init_states": _wire_encode(init_states, args.wire),
+        "doy_sincos": sc,
+        "steps": args.days,
+        "perturbation": None,
+    }
+    base_resp, _ = _http_json(f"{url}/simulate", base_payload)
+    base_arr = _decode_arr(base_resp["rollout"] if "rollout" in base_resp else base_resp["states"])
+    base_bad = validity(base_arr, args.days)
+
     latencies = []
+    validity_errors = list(base_bad)
+    null_checks = []
     for shock_name in ("null", "warm_ocean", "monsoon_stall") * ((args.calls + 2) // 3):
         if len(latencies) >= args.calls:
             break
-        from monsoon_r1.scoring import make_shock
-        pert = make_shock(shock_name).astype(np.float32)
+        pert = make_shock(shock_name, init_states[-1], STD_DEFAULT).astype(np.float32)
         payload = {
-            "init_states": _encode_arr(_base_init_states(180)),
-            "doy_sincos": list(doy_sincos(np.array([180], dtype=np.int64))[0].astype(float)),
+            "init_states": _wire_encode(init_states, args.wire),
+            "doy_sincos": sc,
             "steps": args.days,
-            "perturbation": _encode_arr(pert),
+            "perturbation": _wire_encode(pert, args.wire),
         }
         resp, ms = _http_json(f"{url}/simulate", payload)
         arr = _decode_arr(resp["rollout"] if "rollout" in resp else resp["states"])
-        assert arr.shape == (args.days, NC, NLAT, NLON), f"Bad rollout shape {arr.shape}"
-        assert np.isfinite(arr).all(), "Non-finite values in rollout"
+        errs = validity(arr, args.days)
+        if errs:
+            validity_errors.extend(f"{shock_name}: {e}" for e in errs)
+        if shock_name == "null":
+            null_checks.append(null_consistent(base_arr, arr, STD_DEFAULT))
         latencies.append(ms)
 
     banned = re.compile(
@@ -169,22 +203,32 @@ def _run_verify_cli(args) -> int:
         if banned.search(p.read_text(errors="ignore")):
             banned_hits.append(str(p))
 
+    valid_ok = len(validity_errors) == 0
+    null_ok = bool(null_checks) and all(null_checks)
+    latency_ok = max(latencies) / 1000.0 <= args.max_latency
+    anti_cheat_ok = len(banned_hits) == 0
+
     report = {
         "health": health,
         "health_ms": round(h_ms, 2),
+        "wire": args.wire,
         "calls": len(latencies),
         "max_latency_s": round(max(latencies) / 1000.0, 3),
         "mean_latency_s": round((sum(latencies) / len(latencies)) / 1000.0, 3),
-        "latency_ok": max(latencies) / 1000.0 <= args.max_latency,
+        "latency_ok": latency_ok,
+        "valid_ok": valid_ok,
+        "validity_errors": validity_errors,
+        "null_ok": null_ok,
         "banned_hits": banned_hits,
-        "anti_cheat_ok": len(banned_hits) == 0,
+        "anti_cheat_ok": anti_cheat_ok,
     }
     print(json.dumps(report, indent=2))
-    return 0 if (report["latency_ok"] and report["anti_cheat_ok"]) else 1
+    return 0 if (latency_ok and valid_ok and null_ok and anti_cheat_ok) else 1
 
 
 def _smoke_test() -> None:
     import torch
+    from .models import build_model
 
     static = np.zeros((4, NLAT, NLON), dtype=np.float32)
     z = torch.randn(2, T_IN, NC, NLAT, NLON)
@@ -261,24 +305,33 @@ def main(argv=None) -> int:
     s.add_argument("--days", type=int, default=SCORE_STEPS)
     s.add_argument("--doy", type=int, default=180)
     s.add_argument("--var", choices=["all", *CHANNELS], default="all")
+    s.add_argument("--wire", choices=["lists", "b64"], default="lists")
     s.add_argument("--compare-null", action="store_true", help="Also run null shock and report delta magnitudes")
     s.add_argument("--json", action="store_true", help="Emit machine-readable JSON for agents")
     s.add_argument("--out", type=Path, default=None)
 
     v = sp.add_parser("verify", help="Run automated Round-1 contract, latency, and anti-cheat checks")
     v.add_argument("--url", type=str, default="http://localhost:8000")
+    v.add_argument("--artifacts-dir", type=Path, default=Path("artifacts"))
+    v.add_argument("--wire", choices=["lists", "b64"], default="lists")
     v.add_argument("--calls", type=int, default=8)
     v.add_argument("--days", type=int, default=SCORE_STEPS)
     v.add_argument("--max-latency", type=float, default=5.0)
 
     args = ap.parse_args(argv)
     if args.cmd == "download-data":
+        from .data import download_dataset
+
         nc, st = download_dataset(args.data_dir, force=args.force)
         print(f"Downloaded: {nc} ({nc.stat().st_size / 1e6:.1f} MB), {st}")
     elif args.cmd == "prepare-artifacts":
+        from .data import prepare_artifacts
+
         meta = prepare_artifacts(args.nc, args.artifacts_dir, train_end=args.train_end)
         print("Prepared artifacts:", json.dumps(meta, indent=2))
     elif args.cmd == "train":
+        from .train import run_training
+
         sched = tuple(int(v) for v in args.rollout_schedule.split(","))
         ckpt = run_training(
             nc_path=args.nc,
@@ -301,6 +354,8 @@ def main(argv=None) -> int:
         )
         print(f"Best checkpoint saved: {ckpt}")
     elif args.cmd == "eval":
+        from .evaluate import evaluate_predictor, make_predictor
+
         pred_fn = make_predictor(args.artifacts_dir, ckpts=args.ckpts, onnx_paths=args.onnx)
         res = evaluate_predictor(args.nc, args.artifacts_dir, pred_fn, val_start=args.val_start)
         txt = json.dumps(res, indent=2)
@@ -309,11 +364,13 @@ def main(argv=None) -> int:
             args.out_json.parent.mkdir(parents=True, exist_ok=True)
             args.out_json.write_text(txt)
     elif args.cmd == "export-onnx":
+        from .export_onnx import export_checkpoint_to_onnx
+
         export_checkpoint_to_onnx(args.ckpt, args.static, args.out)
     elif args.cmd == "smoke-test":
         _smoke_test()
     elif args.cmd == "health":
-        resp, ms = _http_json(f"{args.url.rstrip('/')}/health")
+        resp, ms = _http_json(f"{args.url.rstrip('/')}/health", method="POST")
         if args.json:
             print(json.dumps({"latency_ms": round(ms, 2), **resp}, indent=2))
         else:
