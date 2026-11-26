@@ -23,9 +23,11 @@ class ChannelLayerNorm2d(nn.Module):
         self.eps = eps
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        mean = x.mean(dim=1, keepdim=True)
-        var = (x - mean).pow(2).mean(dim=1, keepdim=True)
-        return (x - mean) * torch.rsqrt(var + self.eps) * self.weight + self.bias
+        xf = x.float()
+        mean = xf.mean(dim=1, keepdim=True)
+        var = (xf - mean).pow(2).mean(dim=1, keepdim=True)
+        normed = ((xf - mean) * torch.rsqrt(var + self.eps)).to(x.dtype)
+        return normed * self.weight + self.bias
 
 
 def eval_harmonic_4(doy_sc: torch.Tensor, coef: torch.Tensor, shift_minus_one: bool = True) -> torch.Tensor:
@@ -101,35 +103,36 @@ class PhysicsFeatureBlock(nn.Module):
 
     def forward(self, z_hist: torch.Tensor, doy_sc: torch.Tensor) -> torch.Tensor:
         """z_hist: [B, 3, 6, H, W], doy_sc: [B, 2] -> [B, 17, H, W]."""
-        z_t = z_hist[:, -1]
-        z_m1 = z_hist[:, -2]
-        z_m2 = z_hist[:, -3]
+        zf = z_hist.float()
+        z_t = zf[:, -1]
+        z_m1 = zf[:, -2]
+        z_m2 = zf[:, -3]
 
         dz1 = z_t - z_m1
         dz0 = z_m1 - z_m2
 
-        # Reconstruct true physical u10, v10, msl, tcwv for exact spherical derivatives
-        clim_phys = eval_harmonic_4(doy_sc, self.clim_phys_coef, shift_minus_one=True)
-        phys_t = z_t * self.anom_std_full + clim_phys
+        # Reconstruct true physical u10, v10, msl, tcwv in fp32 (msl ~101325 Pa overflows fp16)
+        clim_phys = eval_harmonic_4(doy_sc.float(), self.clim_phys_coef.float(), shift_minus_one=True)
+        phys_t = z_t * self.anom_std_full.float() + clim_phys
         u = phys_t[:, 2:3]
         v = phys_t[:, 3:4]
-        msl = phys_t[:, 4:5]
+        msl = phys_t[:, 4:5] - 101325.0
         tcwv = torch.clamp(phys_t[:, 5:6], min=0.0)
 
         dmsl_dx, dmsl_dy = spatial_grad_central(msl)
-        dmsl_dx_s = (dmsl_dx * self.inv_cos_lat) * 0.005
+        dmsl_dx_s = (dmsl_dx * self.inv_cos_lat.float()) * 0.005
         dmsl_dy_s = dmsl_dy * 0.005
 
         du_dx, _ = spatial_grad_central(u)
-        _, duc_dy = spatial_grad_central(u * self.cos_lat)
+        _, duc_dy = spatial_grad_central(u * self.cos_lat.float())
         dv_dx, _ = spatial_grad_central(v)
-        _, dvc_dy = spatial_grad_central(v * self.cos_lat)
+        _, dvc_dy = spatial_grad_central(v * self.cos_lat.float())
 
-        div = (du_dx * self.inv_cos_lat + dvc_dy * self.inv_cos_lat) * 0.2
-        vort = (dv_dx * self.inv_cos_lat - duc_dy * self.inv_cos_lat) * 0.2
+        div = (du_dx * self.inv_cos_lat.float() + dvc_dy * self.inv_cos_lat.float()) * 0.2
+        vort = (dv_dx * self.inv_cos_lat.float() - duc_dy * self.inv_cos_lat.float()) * 0.2
 
         dqu_dx, _ = spatial_grad_central(tcwv * u)
-        _, dqvc_dy = spatial_grad_central(tcwv * v * self.cos_lat)
-        mfc = -(dqu_dx * self.inv_cos_lat + dqvc_dy * self.inv_cos_lat) * 0.01
+        _, dqvc_dy = spatial_grad_central(tcwv * v * self.cos_lat.float())
+        mfc = -(dqu_dx * self.inv_cos_lat.float() + dqvc_dy * self.inv_cos_lat.float()) * 0.01
 
-        return torch.cat([dz1, dz0, dmsl_dx_s, dmsl_dy_s, div, vort, mfc], dim=1)
+        return torch.cat([dz1, dz0, dmsl_dx_s, dmsl_dy_s, div, vort, mfc], dim=1).to(z_hist.dtype)
