@@ -196,6 +196,21 @@ def test_monsoon_loss_backward_no_inplace():
         assert z_pred.grad is not None and torch.isfinite(z_pred.grad).all()
 
 
+def test_shock_stability_loss_backward():
+    torch = pytest.importorskip("torch")
+    from twin.losses import shock_stability_loss
+
+    clim_tr = torch.zeros(365, NC, NLAT, NLON, dtype=torch.float32)
+    anom_std = torch.tensor([1.7, 0.7, 1.5, 1.4, 280.0, 6.0], dtype=torch.float32)
+    phys_std = torch.tensor([13.4, 7.5, 2.9, 2.4, 618.0, 20.4], dtype=torch.float32)
+    z_base = torch.zeros(4, 2, NC, NLAT, NLON, dtype=torch.float32)
+    z_pert = torch.randn(4, 2, NC, NLAT, NLON, dtype=torch.float32, requires_grad=True)
+    doy_tgt = torch.randint(0, 365, (4, 2))
+    loss = shock_stability_loss(z_base, z_pert, doy_tgt, clim_tr, anom_std, phys_std)
+    loss.backward()
+    assert torch.isfinite(loss) and z_pert.grad is not None and torch.isfinite(z_pert.grad).all()
+
+
 def test_anti_cheat_hygiene():
     root = Path(__file__).resolve().parent.parent
     banned = re.compile(

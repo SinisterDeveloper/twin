@@ -125,3 +125,25 @@ class MonsoonLoss(nn.Module):
             "var": float(loss_var.detach()),
         }
         return total, stats
+
+
+def shock_stability_loss(
+    z_base: torch.Tensor,
+    z_pert: torch.Tensor,
+    doy_tgt: torch.Tensor,
+    clim_tr: torch.Tensor,
+    anom_std: torch.Tensor,
+    phys_std: torch.Tensor,
+) -> torch.Tensor:
+    """Bound convective tp runaway under random thermodynamic perturbations while keeping baseline detached."""
+    zb = z_base.float()
+    zp = z_pert.float()
+    clim_sel = clim_tr[doy_tgt].float()
+    a_std = anom_std.view(1, 1, 6, 1, 1).float()
+    p_std = phys_std.view(1, 1, 6, 1, 1).float()
+
+    tp_base = torch.expm1(torch.clamp(zb[:, :, 1] * a_std[:, :, 1] + clim_sel[:, :, 1], 0.0, 8.0))
+    tp_pert = torch.expm1(torch.clamp(zp[:, :, 1] * a_std[:, :, 1] + clim_sel[:, :, 1], 0.0, 8.0))
+    tp_z = torch.abs(tp_pert - tp_base) / phys_std[1].float()
+    all_z = torch.abs(zp - zb) * a_std / p_std
+    return F.relu(tp_z - 2.8).pow(2).mean() + 0.25 * F.relu(all_z - 3.5).pow(2).mean()

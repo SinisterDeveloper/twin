@@ -296,6 +296,12 @@ def evaluate_predictor(
     caus_pts = causality_points(shock_res, null_ok)
     total_auto = f_pts["points"] + blur_pts + caus_pts
 
+    monsoon_res = [r for r in shock_res if int(r["window_date"][5:7]) in (5, 6, 7, 8, 9)]
+    monsoon_caus_pts = causality_points(monsoon_res, null_ok) if monsoon_res else caus_pts
+    monsoon_shocks_pass = bool(
+        null_ok and all(r["nonzero"] and r["localized"] and r["propagates"] and r["stable"] for r in (monsoon_res or shock_res))
+    )
+
     worst_near = float(min((r.get("near_frac_day1", 0.0) for r in shock_res), default=0.0))
     worst_far = float(max((r.get("far_frac_max", 1.0) for r in shock_res), default=1.0))
     all_shocks_pass = bool(null_ok and all(r["nonzero"] and r["localized"] and r["propagates"] and r["stable"] for r in shock_res))
@@ -310,6 +316,8 @@ def evaluate_predictor(
         "channel_blur_ratio": {CHANNELS[i]: round(float(ch_blur_mean[i]), 4) for i in range(NC)},
         "anti_blur_pts": round(blur_pts, 2),
         "causality_pts": round(caus_pts, 2),
+        "monsoon_causality_pts": round(monsoon_caus_pts, 2),
+        "monsoon_shocks_pass": monsoon_shocks_pass,
         "null_ok": null_ok,
         "all_shocks_pass": all_shocks_pass,
         "worst_near_frac_day1": round(worst_near, 4),

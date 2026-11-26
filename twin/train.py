@@ -11,7 +11,7 @@ import torch
 
 from .data import GPURolloutBatcher, load_netcdf
 from .evaluate import evaluate_predictor, make_predictor_from_model
-from .losses import MonsoonLoss
+from .losses import MonsoonLoss, shock_stability_loss
 from .models import build_model
 
 
@@ -72,6 +72,7 @@ def run_training(
     w_csi: float = 0.25,
     w_grad: float = 0.15,
     w_var: float = 0.15,
+    w_stab: float = 0.15,
     pushforward_noise: float = 0.03,
     ema_decay: float = 0.995,
     seed: int = 42,
@@ -88,6 +89,9 @@ def run_training(
     clim_uv_coef = np.load(uv_p) if uv_p.exists() else None
     meta = json.loads((artifacts_dir / "norm_stats.json").read_text())
     anom_std = np.array(meta["anom_std"], dtype=np.float32)
+    phys_std_t = torch.tensor(meta["phys_std"], dtype=torch.float32, device=device)
+    anom_std_t = torch.from_numpy(anom_std).to(device)
+    clim_tr_t = torch.from_numpy(clim_tr).to(device)
 
     data, dates, _ = load_netcdf(nc_path)
     t_cut = dt.date.fromisoformat(train_end)
@@ -205,11 +209,27 @@ def run_training(
             tr_batcher.set_rollout_steps(steps)
             model.train()
             tr_losses = []
-            for z_in, sc_seq, doy_tgt, z_tgt, phys_tgt in tr_batcher:
+            for b_idx, (z_in, sc_seq, doy_tgt, z_tgt, phys_tgt) in enumerate(tr_batcher):
                 opt.zero_grad(set_to_none=True)
                 with torch.amp.autocast("cuda", enabled=use_amp):
                     pred = rollout_step_teacher(model, z_in, sc_seq, pushforward_noise=pushforward_noise)
                     loss, _ = criterion(pred, z_tgt, doy_tgt, phys_tgt)
+                    if w_stab > 0.0 and b_idx % 2 == 0:
+                        n_s = min(8, z_in.shape[0])
+                        s_stab = min(2, steps)
+                        z_in_p = z_in[:n_s].clone()
+                        rh = int(torch.randint(6, 13, (1,)))
+                        cw = int(torch.randint(6, 13, (1,)))
+                        r0 = int(torch.randint(0, 32 - rh + 1, (1,)))
+                        c0 = int(torch.randint(0, 36 - cw + 1, (1,)))
+                        d_t2m = float(1.5 + 1.7 * torch.rand(1))
+                        d_tcwv = float(3.0 + 6.0 * torch.rand(1))
+                        z_in_p[:, -1, 0, r0 : r0 + rh, c0 : c0 + cw] += d_t2m / float(anom_std[0])
+                        z_in_p[:, -1, 5, r0 : r0 + rh, c0 : c0 + cw] += d_tcwv / float(anom_std[5])
+                        z_pert = rollout_step_teacher(model, z_in_p, sc_seq[:n_s, :s_stab], pushforward_noise=0.0)
+                        loss = loss + w_stab * shock_stability_loss(
+                            pred[:n_s, :s_stab].detach(), z_pert, doy_tgt[:n_s, :s_stab], clim_tr_t, anom_std_t, phys_std_t
+                        )
                 scaler.scale(loss).backward()
                 scaler.unscale_(opt)
                 torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
@@ -244,11 +264,27 @@ def run_training(
         for ep in range(1, epochs_stage3 + 1):
             model.train()
             tr_losses = []
-            for z_in, sc_seq, doy_tgt, z_tgt, phys_tgt in tr_batcher:
+            for b_idx, (z_in, sc_seq, doy_tgt, z_tgt, phys_tgt) in enumerate(tr_batcher):
                 opt.zero_grad(set_to_none=True)
                 with torch.amp.autocast("cuda", enabled=use_amp):
                     pred = rollout_step_teacher(model, z_in, sc_seq, pushforward_noise=pushforward_noise * 0.5)
                     loss, _ = criterion(pred, z_tgt, doy_tgt, phys_tgt)
+                    if w_stab > 0.0 and b_idx % 2 == 0:
+                        n_s = min(8, z_in.shape[0])
+                        s_stab = min(2, final_steps)
+                        z_in_p = z_in[:n_s].clone()
+                        rh = int(torch.randint(6, 13, (1,)))
+                        cw = int(torch.randint(6, 13, (1,)))
+                        r0 = int(torch.randint(0, 32 - rh + 1, (1,)))
+                        c0 = int(torch.randint(0, 36 - cw + 1, (1,)))
+                        d_t2m = float(1.5 + 1.7 * torch.rand(1))
+                        d_tcwv = float(3.0 + 6.0 * torch.rand(1))
+                        z_in_p[:, -1, 0, r0 : r0 + rh, c0 : c0 + cw] += d_t2m / float(anom_std[0])
+                        z_in_p[:, -1, 5, r0 : r0 + rh, c0 : c0 + cw] += d_tcwv / float(anom_std[5])
+                        z_pert = rollout_step_teacher(model, z_in_p, sc_seq[:n_s, :s_stab], pushforward_noise=0.0)
+                        loss = loss + w_stab * shock_stability_loss(
+                            pred[:n_s, :s_stab].detach(), z_pert, doy_tgt[:n_s, :s_stab], clim_tr_t, anom_std_t, phys_std_t
+                        )
                 scaler.scale(loss).backward()
                 scaler.unscale_(opt)
                 torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)

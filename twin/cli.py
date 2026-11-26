@@ -232,6 +232,7 @@ def main(argv=None) -> int:
     t.add_argument("--w-csi", type=float, default=0.25)
     t.add_argument("--w-grad", type=float, default=0.15)
     t.add_argument("--w-var", type=float, default=0.15)
+    t.add_argument("--w-stab", type=float, default=0.15)
     t.add_argument("--pushforward-noise", type=float, default=0.03)
     t.add_argument("--seed", type=int, default=42)
     t.add_argument("--no-amp", action="store_true")
@@ -313,6 +314,7 @@ def main(argv=None) -> int:
             w_csi=args.w_csi,
             w_grad=args.w_grad,
             w_var=args.w_var,
+            w_stab=args.w_stab,
             pushforward_noise=args.pushforward_noise,
             seed=args.seed,
             amp=not args.no_amp,
