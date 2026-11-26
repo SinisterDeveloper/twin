@@ -1,56 +1,63 @@
-import type { ChannelKey } from "./contract";
+import { LAT_MAX, LAT_MIN, LON_MAX, LON_MIN, NLAT, NLON, sampleBilinear, type ChannelKey } from "./contract";
 
 export type ColormapName = "thermal" | "rain" | "wind" | "pressure" | "moisture" | "delta";
 
 type RGB = [number, number, number];
 
+/**
+ * Rich meteorological colormaps inspired by ECMWF / Windy / Doppler radar.
+ */
 const STOPS: Record<ColormapName, RGB[]> = {
   thermal: [
-    [22, 34, 82],
-    [38, 102, 168],
-    [56, 178, 164],
-    [232, 208, 72],
-    [239, 114, 42],
-    [186, 24, 38],
+    [68, 28, 128],
+    [34, 88, 214],
+    [18, 172, 224],
+    [44, 206, 132],
+    [244, 222, 54],
+    [246, 122, 28],
+    [214, 24, 46],
   ],
   rain: [
-    [13, 21, 38],
-    [23, 56, 98],
-    [28, 118, 166],
-    [45, 184, 178],
-    [136, 224, 134],
-    [248, 226, 74],
-    [230, 82, 54],
+    [11, 18, 32],
+    [17, 46, 88],
+    [14, 108, 178],
+    [18, 188, 212],
+    [42, 212, 92],
+    [248, 226, 44],
+    [246, 118, 24],
+    [224, 34, 162],
   ],
   wind: [
-    [35, 86, 198],
-    [84, 152, 232],
-    [186, 214, 235],
-    [224, 228, 234],
-    [242, 182, 128],
-    [226, 102, 58],
-    [164, 24, 38],
+    [22, 68, 188],
+    [42, 148, 232],
+    [82, 214, 198],
+    [234, 236, 218],
+    [248, 192, 72],
+    [238, 96, 36],
+    [178, 22, 54],
   ],
   pressure: [
-    [48, 24, 96],
-    [46, 98, 168],
-    [52, 176, 158],
-    [162, 212, 104],
-    [248, 222, 68],
+    [52, 18, 114],
+    [28, 86, 194],
+    [22, 168, 182],
+    [74, 208, 118],
+    [248, 224, 62],
+    [244, 128, 42],
   ],
   moisture: [
-    [24, 22, 46],
-    [44, 68, 134],
-    [32, 138, 168],
-    [54, 196, 154],
-    [186, 230, 122],
+    [18, 18, 38],
+    [28, 58, 138],
+    [18, 136, 188],
+    [34, 206, 158],
+    [182, 236, 94],
+    [250, 236, 146],
   ],
   delta: [
-    [26, 78, 196],
-    [88, 162, 238],
-    [30, 41, 59],
-    [244, 134, 72],
-    [206, 36, 48],
+    [24, 72, 204],
+    [78, 164, 246],
+    [28, 34, 48],
+    [248, 134, 62],
+    [214, 28, 44],
   ],
 };
 
@@ -93,4 +100,41 @@ export function cssLinearGradient(name: ColormapName): string {
     })
     .join(", ");
   return `linear-gradient(to right, ${stops})`;
+}
+
+export function renderFieldToCanvas(
+  ctx: CanvasRenderingContext2D,
+  scalarGrid: number[][],
+  width: number,
+  height: number,
+  toDisplay: (v: number) => number,
+  rMin: number,
+  rMax: number,
+  cmap: ColormapName,
+  smooth: boolean,
+): void {
+  const img = ctx.createImageData(width, height);
+  const data = img.data;
+  const invSpan = 1.0 / Math.max(rMax - rMin, 1e-6);
+
+  for (let py = 0; py < height; py++) {
+    const lat = LAT_MAX - ((py + 0.5) / height) * (LAT_MAX - LAT_MIN);
+    const nearestI = Math.min(NLAT - 1, Math.max(0, Math.floor((1 - (py + 0.5) / height) * NLAT)));
+
+    for (let px = 0; px < width; px++) {
+      const lon = LON_MIN + ((px + 0.5) / width) * (LON_MAX - LON_MIN);
+      const nearestJ = Math.min(NLON - 1, Math.max(0, Math.floor(((px + 0.5) / width) * NLON)));
+
+      const raw = smooth ? sampleBilinear(scalarGrid, lat, lon) : scalarGrid[nearestI][nearestJ];
+      const norm = (toDisplay(raw) - rMin) * invSpan;
+      const [r, g, b] = sampleColormap(cmap, norm);
+
+      const off = (py * width + px) * 4;
+      data[off] = r;
+      data[off + 1] = g;
+      data[off + 2] = b;
+      data[off + 3] = 255;
+    }
+  }
+  ctx.putImageData(img, 0, 0);
 }

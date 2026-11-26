@@ -58,8 +58,9 @@ export default function App() {
   const [channel, setChannel] = useState<ChannelKey>("tp");
   const [useCelsius, setUseCelsius] = useState<boolean>(true);
   const [showVectors, setShowVectors] = useState<boolean>(true);
-  const [smoothGrid, setSmoothGrid] = useState<boolean>(false);
+  const [smoothGrid, setSmoothGrid] = useState<boolean>(true);
   const [showBoxes, setShowBoxes] = useState<boolean>(true);
+  const [showCities, setShowCities] = useState<boolean>(true);
 
   const [day, setDay] = useState<number>(0);
   const [playing, setPlaying] = useState<boolean>(false);
@@ -220,8 +221,9 @@ export default function App() {
 
             <div className="mt-3 flex flex-col gap-1.5 border-t border-zinc-900 pt-3">
               <SwitchRow label="Temperature in °C" checked={useCelsius} onChange={setUseCelsius} />
-              <SwitchRow label="10m Wind Vectors" checked={showVectors} onChange={setShowVectors} />
-              <SwitchRow label="Smooth Grid" checked={smoothGrid} onChange={setSmoothGrid} />
+              <SwitchRow label="Wind Streamlines" checked={showVectors} onChange={setShowVectors} />
+              <SwitchRow label="Smooth Radar Grid" checked={smoothGrid} onChange={setSmoothGrid} />
+              <SwitchRow label="City Labels" checked={showCities} onChange={setShowCities} />
               <SwitchRow label="Ocean Boxes" checked={showBoxes} onChange={setShowBoxes} />
             </div>
           </section>
@@ -296,6 +298,7 @@ export default function App() {
             showVectors={showVectors}
             smoothGrid={smoothGrid}
             showBoxes={showBoxes}
+            showCities={showCities}
             title={`Timeline Prime · ${meta.label}`}
             subtitle={day === 0 ? "Initial State (t = 0)" : `Autoregressive Rollout · Day +${day}`}
           />

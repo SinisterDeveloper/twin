@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   BOX_ARABIAN_SEA,
   BOX_BAY_OF_BENGAL,
@@ -11,11 +11,17 @@ import {
   LON,
   LON_MAX,
   LON_MIN,
+  MAJOR_CITIES,
   NLAT,
   NLON,
+  sampleBilinear,
   type ChannelKey,
 } from "../lib/contract";
-import { channelColormap, cssLinearGradient, sampleColormap } from "../lib/colormaps";
+import {
+  channelColormap,
+  cssLinearGradient,
+  renderFieldToCanvas,
+} from "../lib/colormaps";
 
 interface IndiaGridMapProps {
   /** [6, 32, 36] state grid for the active day */
@@ -25,6 +31,7 @@ interface IndiaGridMapProps {
   showVectors: boolean;
   smoothGrid: boolean;
   showBoxes: boolean;
+  showCities?: boolean;
   title?: string;
   subtitle?: string;
   onCellClick?: (lat: number, lon: number) => void;
@@ -32,6 +39,11 @@ interface IndiaGridMapProps {
 
 const SVG_W = 360;
 const SVG_H = 320;
+const FIELD_W = 360;
+const FIELD_H = 320;
+const STREAM_W = 720;
+const STREAM_H = 640;
+const PARTICLE_COUNT = 260;
 
 function lonToX(lon: number): number {
   return ((lon - LON_MIN) / (LON_MAX - LON_MIN)) * SVG_W;
@@ -41,6 +53,13 @@ function latToY(lat: number): number {
   return ((LAT_MAX - lat) / (LAT_MAX - LAT_MIN)) * SVG_H;
 }
 
+function compassDir(u: number, v: number): string {
+  // Meteorological wind vector points toward (u, v); compass label of flow direction
+  const deg = ((Math.atan2(u, v) * 180) / Math.PI + 360) % 360;
+  const dirs = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"];
+  return dirs[Math.round(deg / 45) % 8];
+}
+
 export function IndiaGridMap({
   stateGrid,
   channel,
@@ -48,67 +67,114 @@ export function IndiaGridMap({
   showVectors,
   smoothGrid,
   showBoxes,
+  showCities = true,
   title,
   subtitle,
   onCellClick,
 }: IndiaGridMapProps) {
-  const canvasRef = useRef<HTMLCanvasElement | null>(null);
-  const [hover, setHover] = useState<{ i: number; j: number } | null>(null);
+  const fieldCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const streamCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const [hover, setHover] = useState<{ i: number; j: number; lat: number; lon: number } | null>(null);
 
   const meta = CHANNEL_META[channel];
   const cmap = channelColormap(channel);
   const [rMin, rMax] = meta.range(useCelsius);
   const scalarGrid = stateGrid[meta.index];
 
+  // Render smooth bilinear or crisp 1° meteorological heatmap
   useEffect(() => {
-    const canvas = canvasRef.current;
+    const canvas = fieldCanvasRef.current;
     if (!canvas) return;
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
 
-    const img = ctx.createImageData(NLON, NLAT);
-    const data = img.data;
-    for (let i = 0; i < NLAT; i++) {
-      // North-up: row 0 on canvas corresponds to NLAT - 1 (37.5°N)
-      const latIdx = NLAT - 1 - i;
-      for (let j = 0; j < NLON; j++) {
-        const disp = meta.toDisplay(scalarGrid[latIdx][j], useCelsius);
-        const norm = (disp - rMin) / Math.max(rMax - rMin, 1e-6);
-        const [r, g, b] = sampleColormap(cmap, norm);
-        const off = (i * NLON + j) * 4;
-        data[off] = r;
-        data[off + 1] = g;
-        data[off + 2] = b;
-        data[off + 3] = 255;
-      }
-    }
-    ctx.putImageData(img, 0, 0);
-  }, [scalarGrid, meta, useCelsius, rMin, rMax, cmap]);
+    renderFieldToCanvas(
+      ctx,
+      scalarGrid,
+      FIELD_W,
+      FIELD_H,
+      (v) => meta.toDisplay(v, useCelsius),
+      rMin,
+      rMax,
+      cmap,
+      smoothGrid,
+    );
+  }, [scalarGrid, meta, useCelsius, rMin, rMax, cmap, smoothGrid]);
 
-  const windArrows = useMemo(() => {
-    if (!showVectors) return [];
+  // Animated Windy-style wind particle streamlines
+  useEffect(() => {
+    const canvas = streamCanvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+
+    ctx.clearRect(0, 0, STREAM_W, STREAM_H);
+    if (!showVectors) return;
+
     const uGrid = stateGrid[2];
     const vGrid = stateGrid[3];
-    const arrows: { x1: number; y1: number; x2: number; y2: number; key: string }[] = [];
-    for (let i = 1; i < NLAT; i += 2) {
-      for (let j = 1; j < NLON; j += 2) {
-        const u = uGrid[i][j];
-        const v = vGrid[i][j];
-        const mag = Math.hypot(u, v);
-        if (mag < 0.2) continue;
-        const cx = lonToX(LON[j]);
-        const cy = latToY(LAT[i]);
-        const scale = Math.min(13, Math.max(3, mag * 0.9)) / mag;
-        arrows.push({
-          key: `${i}-${j}`,
-          x1: cx,
-          y1: cy,
-          x2: cx + u * scale,
-          y2: cy - v * scale,
-        });
-      }
+
+    interface Particle {
+      x: number;
+      y: number;
+      age: number;
+      maxAge: number;
     }
-    return arrows;
+
+    const spawn = (): Particle => ({
+      x: Math.random() * STREAM_W,
+      y: Math.random() * STREAM_H,
+      age: Math.floor(Math.random() * 45),
+      maxAge: 45 + Math.floor(Math.random() * 40),
+    });
+
+    const particles: Particle[] = Array.from({ length: PARTICLE_COUNT }, spawn);
+    let rafId = 0;
+
+    const tick = () => {
+      ctx.globalCompositeOperation = "destination-out";
+      ctx.fillStyle = "rgba(0, 0, 0, 0.085)";
+      ctx.fillRect(0, 0, STREAM_W, STREAM_H);
+      ctx.globalCompositeOperation = "source-over";
+
+      ctx.lineCap = "round";
+      for (let p = 0; p < particles.length; p++) {
+        const pt = particles[p];
+        if (pt.age >= pt.maxAge || pt.x < 0 || pt.x >= STREAM_W || pt.y < 0 || pt.y >= STREAM_H) {
+          particles[p] = spawn();
+          particles[p].age = 0;
+          continue;
+        }
+
+        const lon = LON_MIN + (pt.x / STREAM_W) * (LON_MAX - LON_MIN);
+        const lat = LAT_MAX - (pt.y / STREAM_H) * (LAT_MAX - LAT_MIN);
+        const u = sampleBilinear(uGrid, lat, lon);
+        const v = sampleBilinear(vGrid, lat, lon);
+        const speed = Math.hypot(u, v);
+
+        const dx = u * 0.34;
+        const dy = -v * 0.34;
+        const nx = pt.x + dx;
+        const ny = pt.y + dy;
+
+        const alpha = Math.min(0.88, 0.25 + speed * 0.055);
+        ctx.strokeStyle = `rgba(255, 255, 255, ${alpha.toFixed(2)})`;
+        ctx.lineWidth = speed > 8 ? 1.55 : 1.15;
+        ctx.beginPath();
+        ctx.moveTo(pt.x, pt.y);
+        ctx.lineTo(nx, ny);
+        ctx.stroke();
+
+        pt.x = nx;
+        pt.y = ny;
+        pt.age += 1;
+      }
+
+      rafId = window.requestAnimationFrame(tick);
+    };
+
+    rafId = window.requestAnimationFrame(tick);
+    return () => window.cancelAnimationFrame(rafId);
   }, [showVectors, stateGrid]);
 
   const handlePointerMove = (e: React.PointerEvent<SVGSVGElement>) => {
@@ -117,7 +183,9 @@ export function IndiaGridMap({
     const yFrac = Math.min(0.9999, Math.max(0, (e.clientY - rect.top) / rect.height));
     const j = Math.floor(xFrac * NLON);
     const i = NLAT - 1 - Math.floor(yFrac * NLAT);
-    setHover({ i, j });
+    const lon = LON_MIN + xFrac * (LON_MAX - LON_MIN);
+    const lat = LAT_MAX - yFrac * (LAT_MAX - LAT_MIN);
+    setHover({ i, j, lat, lon });
   };
 
   const handleClick = (e: React.MouseEvent<SVGSVGElement>) => {
@@ -131,30 +199,41 @@ export function IndiaGridMap({
   };
 
   const boxes = showBoxes ? [BOX_ARABIAN_SEA, BOX_BAY_OF_BENGAL] : [];
+  const ticks = [0, 0.25, 0.5, 0.75, 1].map((f) => rMin + f * (rMax - rMin));
 
   return (
-    <div className="flex flex-col rounded-xl border border-zinc-800/80 bg-zinc-950 p-4">
+    <div className="flex flex-col rounded-xl border border-zinc-800/80 bg-zinc-950 p-3.5">
       {(title || subtitle) && (
-        <div className="mb-3 flex items-center justify-between gap-2">
+        <div className="mb-2.5 flex items-center justify-between gap-2">
           <div>
             {title && <h3 className="text-sm font-medium tracking-tight text-zinc-100">{title}</h3>}
             {subtitle && <p className="text-xs text-zinc-500">{subtitle}</p>}
           </div>
           <span className="rounded-md border border-zinc-800 bg-black px-2 py-0.5 font-mono text-[11px] tabular-nums text-zinc-400">
-            32×36 · 1°
+            6.5°–37.5°N · 65.5°–100.5°E
           </span>
         </div>
       )}
 
-      <div className="relative mx-auto w-full max-w-[660px] aspect-[36/32] overflow-hidden rounded-lg border border-zinc-800/90 bg-black">
+      <div className="relative mx-auto w-full max-w-[680px] aspect-[36/32] overflow-hidden rounded-lg border border-zinc-800 bg-slate-950 shadow-2xl">
+        {/* Layer 1: Meteorological Scalar Field */}
         <canvas
-          ref={canvasRef}
-          width={NLON}
-          height={NLAT}
+          ref={fieldCanvasRef}
+          width={FIELD_W}
+          height={FIELD_H}
           className="block h-full w-full"
           style={{ imageRendering: smoothGrid ? "auto" : "pixelated" }}
         />
 
+        {/* Layer 2: Animated Windy-style Wind Streamlines */}
+        <canvas
+          ref={streamCanvasRef}
+          width={STREAM_W}
+          height={STREAM_H}
+          className="pointer-events-none absolute inset-0 h-full w-full"
+        />
+
+        {/* Layer 3: Weather Map Vector Overlays (Coastlines, Cities, Graticule, Shock Boxes) */}
         <svg
           viewBox={`0 0 ${SVG_W} ${SVG_H}`}
           className="absolute inset-0 h-full w-full cursor-crosshair select-none"
@@ -162,19 +241,6 @@ export function IndiaGridMap({
           onPointerLeave={() => setHover(null)}
           onClick={handleClick}
         >
-          <defs>
-            <marker
-              id="wind-arrow"
-              markerWidth="3.5"
-              markerHeight="3.5"
-              refX="2.2"
-              refY="1.75"
-              orient="auto"
-            >
-              <path d="M0,0 L3.5,1.75 L0,3.5 Z" fill="rgba(255, 255, 255, 0.78)" />
-            </marker>
-          </defs>
-
           {/* Lat/Lon Graticule */}
           {[10, 20, 30].map((lat) => {
             const y = latToY(lat);
@@ -185,11 +251,20 @@ export function IndiaGridMap({
                   y1={y}
                   x2={SVG_W}
                   y2={y}
-                  stroke="rgba(255, 255, 255, 0.12)"
-                  strokeWidth={0.55}
+                  stroke="rgba(255, 255, 255, 0.16)"
+                  strokeWidth={0.5}
                   strokeDasharray="2 3"
                 />
-                <text x={5} y={y - 3} fill="rgba(244, 244, 245, 0.55)" fontSize="7.5" fontFamily="monospace">
+                <text
+                  x={5}
+                  y={y - 3}
+                  fill="rgba(255, 255, 255, 0.72)"
+                  stroke="rgba(0, 0, 0, 0.75)"
+                  strokeWidth={1.6}
+                  paintOrder="stroke"
+                  fontSize="7.5"
+                  fontFamily="monospace"
+                >
                   {lat}°N
                 </text>
               </g>
@@ -205,15 +280,18 @@ export function IndiaGridMap({
                   y1={0}
                   x2={x}
                   y2={SVG_H}
-                  stroke="rgba(255, 255, 255, 0.12)"
-                  strokeWidth={0.55}
+                  stroke="rgba(255, 255, 255, 0.16)"
+                  strokeWidth={0.5}
                   strokeDasharray="2 3"
                 />
                 <text
                   x={rightEdge ? x - 3 : x + 3}
                   y={SVG_H - 5}
                   textAnchor={rightEdge ? "end" : "start"}
-                  fill="rgba(244, 244, 245, 0.55)"
+                  fill="rgba(255, 255, 255, 0.72)"
+                  stroke="rgba(0, 0, 0, 0.75)"
+                  strokeWidth={1.6}
+                  paintOrder="stroke"
                   fontSize="7.5"
                   fontFamily="monospace"
                 >
@@ -223,23 +301,59 @@ export function IndiaGridMap({
             );
           })}
 
-          {/* Coastline & Border Context */}
+          {/* Ocean Basin Labels */}
+          <text
+            x={lonToX(69.5)}
+            y={latToY(14.5)}
+            fill="rgba(255, 255, 255, 0.28)"
+            fontSize="7.5"
+            fontWeight="700"
+            letterSpacing="1.6"
+            textAnchor="middle"
+          >
+            ARABIAN SEA
+          </text>
+          <text
+            x={lonToX(88.2)}
+            y={latToY(14.5)}
+            fill="rgba(255, 255, 255, 0.28)"
+            fontSize="7.5"
+            fontWeight="700"
+            letterSpacing="1.6"
+            textAnchor="middle"
+          >
+            BAY OF BENGAL
+          </text>
+
+          {/* Double-stroked Coastlines & Borders for high legibility over vivid radar colors */}
           {INDIA_COAST_POLYLINES.map((poly, idx) => {
             const pts = poly.map(([lo, la]) => `${lonToX(lo).toFixed(1)},${latToY(la).toFixed(1)}`).join(" ");
+            const isBorder = idx === 3;
             return (
-              <polyline
-                key={`coast-${idx}`}
-                points={pts}
-                fill="none"
-                stroke={idx === 2 ? "rgba(255, 255, 255, 0.36)" : "rgba(255, 255, 255, 0.85)"}
-                strokeWidth={idx === 2 ? 0.85 : 1.15}
-                strokeDasharray={idx === 2 ? "2.5 2" : undefined}
-                strokeLinejoin="round"
-              />
+              <g key={`coast-${idx}`}>
+                <polyline
+                  points={pts}
+                  fill="none"
+                  stroke="rgba(0, 0, 0, 0.7)"
+                  strokeWidth={isBorder ? 1.8 : 2.5}
+                  strokeDasharray={isBorder ? "2.5 2" : undefined}
+                  strokeLinejoin="round"
+                  strokeLinecap="round"
+                />
+                <polyline
+                  points={pts}
+                  fill="none"
+                  stroke={isBorder ? "rgba(255, 255, 255, 0.58)" : "rgba(255, 255, 255, 0.96)"}
+                  strokeWidth={isBorder ? 0.95 : 1.35}
+                  strokeDasharray={isBorder ? "2.5 2" : undefined}
+                  strokeLinejoin="round"
+                  strokeLinecap="round"
+                />
+              </g>
             );
           })}
 
-          {/* Reference Shock Boxes */}
+          {/* Reference Shock Regions */}
           {boxes.map((box) => {
             const x = lonToX(box.lon0 - 0.5);
             const y = latToY(box.lat1 + 0.5);
@@ -252,17 +366,20 @@ export function IndiaGridMap({
                   y={y}
                   width={w}
                   height={h}
-                  fill="rgba(255, 255, 255, 0.04)"
-                  stroke="rgba(255, 255, 255, 0.55)"
-                  strokeWidth={0.9}
-                  strokeDasharray="3.5 2.5"
+                  fill="rgba(56, 189, 248, 0.08)"
+                  stroke="rgba(103, 232, 249, 0.85)"
+                  strokeWidth={1.1}
+                  strokeDasharray="4 2.5"
                 />
                 <text
                   x={x + 4}
                   y={y + 10}
-                  fill="rgba(250, 250, 250, 0.82)"
+                  fill="#cffafe"
+                  stroke="rgba(0,0,0,0.8)"
+                  strokeWidth={1.8}
+                  paintOrder="stroke"
                   fontSize="7.5"
-                  fontWeight="500"
+                  fontWeight="600"
                 >
                   {box.name}
                 </text>
@@ -270,19 +387,31 @@ export function IndiaGridMap({
             );
           })}
 
-          {/* 10m Wind Vectors */}
-          {windArrows.map((a) => (
-            <line
-              key={a.key}
-              x1={a.x1}
-              y1={a.y1}
-              x2={a.x2}
-              y2={a.y2}
-              stroke="rgba(255, 255, 255, 0.72)"
-              strokeWidth={0.85}
-              markerEnd="url(#wind-arrow)"
-            />
-          ))}
+          {/* Major City Pins */}
+          {showCities &&
+            MAJOR_CITIES.map((city) => {
+              const cx = lonToX(city.lon);
+              const cy = latToY(city.lat);
+              const leftLabel = city.name === "Bengaluru";
+              return (
+                <g key={city.name}>
+                  <circle cx={cx} cy={cy} r={2.2} fill="#ffffff" stroke="#000000" strokeWidth={0.9} />
+                  <text
+                    x={leftLabel ? cx - 4 : cx + 4}
+                    y={cy + 2.5}
+                    textAnchor={leftLabel ? "end" : "start"}
+                    fill="#ffffff"
+                    stroke="rgba(0, 0, 0, 0.85)"
+                    strokeWidth={2.2}
+                    paintOrder="stroke"
+                    fontSize="7.2"
+                    fontWeight="600"
+                  >
+                    {city.name}
+                  </text>
+                </g>
+              );
+            })}
 
           {/* Hovered Cell */}
           {hover && (
@@ -291,23 +420,29 @@ export function IndiaGridMap({
               y={(NLAT - 1 - hover.i) * (SVG_H / NLAT)}
               width={SVG_W / NLON}
               height={SVG_H / NLAT}
-              fill="none"
+              fill="rgba(255,255,255,0.08)"
               stroke="#ffffff"
-              strokeWidth={1.3}
+              strokeWidth={1.2}
             />
           )}
         </svg>
 
         {hover && (
-          <div className="pointer-events-none absolute top-2.5 right-2.5 rounded-lg border border-zinc-800 bg-black/90 px-3 py-2 text-[11px] shadow-2xl backdrop-blur-md">
-            <div className="mb-1.5 font-mono font-medium tabular-nums text-zinc-100">
-              {LAT[hover.i].toFixed(1)}°N, {LON[hover.j].toFixed(1)}°E
+          <div className="pointer-events-none absolute top-2.5 right-2.5 rounded-lg border border-zinc-700/80 bg-black/85 px-3 py-2 text-[11px] shadow-2xl backdrop-blur-md">
+            <div className="mb-1 flex items-center justify-between gap-3 font-mono font-medium tabular-nums text-zinc-100">
+              <span>
+                {hover.lat.toFixed(1)}°N, {hover.lon.toFixed(1)}°E
+              </span>
+              <span className="text-[10px] text-cyan-300">
+                {Math.hypot(stateGrid[2][hover.i][hover.j], stateGrid[3][hover.i][hover.j]).toFixed(1)} m/s{" "}
+                {compassDir(stateGrid[2][hover.i][hover.j], stateGrid[3][hover.i][hover.j])}
+              </span>
             </div>
-            <div className="grid grid-cols-2 gap-x-3.5 gap-y-0.5 font-mono tabular-nums text-zinc-400">
+            <div className="grid grid-cols-2 gap-x-3.5 gap-y-0.5 font-mono tabular-nums text-zinc-300">
               {CHANNELS.map((c) => {
                 const m = CHANNEL_META[c];
                 return (
-                  <div key={c} className={c === channel ? "font-medium text-zinc-50" : ""}>
+                  <div key={c} className={c === channel ? "font-semibold text-amber-300" : ""}>
                     <span className="text-zinc-500">{c} </span>
                     {m.format(stateGrid[m.index][hover.i][hover.j], useCelsius)}
                   </div>
@@ -318,22 +453,19 @@ export function IndiaGridMap({
         )}
       </div>
 
-      {/* Colorbar */}
-      <div className="mx-auto mt-3.5 w-full max-w-[660px]">
+      {/* Meteorological 5-Tick Colorbar */}
+      <div className="mx-auto mt-3 w-full max-w-[680px]">
         <div
-          className="h-1.5 w-full rounded-full border border-zinc-800"
+          className="h-2.5 w-full rounded-full border border-zinc-800"
           style={{ background: cssLinearGradient(cmap) }}
         />
-        <div className="mt-1.5 flex justify-between font-mono text-[11px] tabular-nums text-zinc-500">
-          <span>
-            {rMin.toFixed(1)} {meta.displayUnit(useCelsius)}
-          </span>
-          <span>
-            {((rMin + rMax) / 2).toFixed(1)} {meta.displayUnit(useCelsius)}
-          </span>
-          <span>
-            {rMax.toFixed(1)} {meta.displayUnit(useCelsius)}
-          </span>
+        <div className="mt-1.5 flex justify-between font-mono text-[11px] tabular-nums text-zinc-400">
+          {ticks.map((t, idx) => (
+            <span key={idx}>
+              {t.toFixed(idx === 0 || idx === ticks.length - 1 ? 0 : 1)}
+              {idx === ticks.length - 1 ? ` ${meta.displayUnit(useCelsius)}` : ""}
+            </span>
+          ))}
         </div>
       </div>
     </div>
