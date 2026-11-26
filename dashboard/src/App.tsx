@@ -240,7 +240,10 @@ export default function App() {
   const doyPct = `${((doy - 1) / 364) * 100}%`;
 
   return (
-    <div className="min-h-screen bg-black bg-[radial-gradient(ellipse_at_top,rgba(255,255,255,0.035),transparent_55%)] text-zinc-50">
+    <div className="relative min-h-screen bg-black text-zinc-50">
+      <div className="bg-dot-glow pointer-events-none fixed inset-0 z-0" aria-hidden="true" />
+      <div className="bg-dot-pattern pointer-events-none fixed inset-0 z-0" aria-hidden="true" />
+
       {/* Slim Header */}
       <header className="sticky top-0 z-20 h-11 border-b border-white/[0.07] bg-black/80 px-5 backdrop-blur-md">
         <div className="mx-auto flex h-full max-w-[1440px] items-center justify-between gap-3">
@@ -255,7 +258,7 @@ export default function App() {
       </header>
 
       {/* Main Workspace */}
-      <main className="mx-auto grid max-w-[1440px] grid-cols-1 md:grid-cols-[268px_1fr]">
+      <main className="relative z-10 mx-auto grid max-w-[1440px] grid-cols-1 md:grid-cols-[268px_1fr]">
         {/* Unified Left Sidebar Rail */}
         <aside className="flex flex-col gap-5 border-b border-white/[0.07] bg-white/[0.012] px-4 py-4 md:border-b-0 md:border-r">
           <ShockBuilder
