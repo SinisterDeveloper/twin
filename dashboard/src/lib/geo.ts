@@ -1,5 +1,6 @@
 import { feature } from "topojson-client";
 import worldCountries from "world-atlas/countries-50m.json";
+import indiaOutlineRaw from "../assets/india_outline.json";
 import indiaStatesRaw from "../assets/india_states.json";
 import { LAT_MAX, LAT_MIN, LON_MAX, LON_MIN } from "./contract";
 
@@ -105,9 +106,10 @@ export const NEIGHBOR_COUNTRY_PATHS: NamedGeoPath[] = worldCollection.features
   }))
   .filter((item) => item.d.length > 0);
 
-// 3. India national outline only (used when internal State Borders are hidden)
-export const INDIA_OUTLINE_PATHS: NamedGeoPath[] = worldCollection.features
-  .filter((f) => String(f.id ?? "") === "356")
+// 3. India national outline only (dissolved from india_states.json so full J&K + Ladakh stay intact)
+export const INDIA_OUTLINE_PATHS: NamedGeoPath[] = (
+  indiaOutlineRaw.features as GeoFeature[]
+)
   .map((f) => ({
     name: String(f.properties?.name ?? "India"),
     d: geometryToPath(f.geometry),
