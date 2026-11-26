@@ -7,8 +7,6 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from .contract import NC
-
 ONE_DAY_RAD = 2.0 * math.pi / 365.0
 
 

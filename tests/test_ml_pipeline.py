@@ -6,11 +6,13 @@ Run BEFORE starting Colab A100 training:
 from __future__ import annotations
 
 import re
+import sys
 import time
 from pathlib import Path
 
 import pytest
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 np = pytest.importorskip("numpy")
 
 from twin.contract import (  # noqa: E402
@@ -59,8 +61,8 @@ def test_scoring_parity_with_monsoon_r1():
     vr_r = r1_scoring.variance_ratio(pred[7], true[7])
     assert np.allclose(vr_t, vr_r, equal_nan=True, atol=1e-5)
 
-    sh_t = twin_scoring.make_shock("warm_ocean", true[0])
-    sh_r = r1_scoring.make_shock("warm_ocean", true[0])
+    sh_t = twin_scoring.make_shock("warm_ocean", true[0], twin_scoring.STD_DEFAULT)
+    sh_r = r1_scoring.make_shock("warm_ocean", true[0], r1_scoring.STD_DEFAULT)
     assert np.allclose(sh_t, sh_r, atol=1e-6)
 
 

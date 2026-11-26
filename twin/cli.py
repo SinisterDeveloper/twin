@@ -59,8 +59,8 @@ def _build_perturbation(args, last_state: np.ndarray) -> np.ndarray | None:
     if args.shock in ("none", "null"):
         return np.zeros((NC, NLAT, NLON), dtype=np.float32) if args.shock == "null" else None
     if args.shock in ("warm_ocean", "monsoon_stall"):
-        from monsoon_r1.scoring import make_shock
-        return make_shock(args.shock, last_state).astype(np.float32)
+        from monsoon_r1.scoring import STD_DEFAULT, make_shock
+        return make_shock(args.shock, last_state, STD_DEFAULT).astype(np.float32)
     # custom localized Gaussian shock
     ch = CHANNELS.index(args.shock_channel) if args.shock_channel in CHANNELS else int(args.shock_channel)
     lat_i = np.clip(args.shock_lat - 6.5, 0.0, float(NLAT - 1))
@@ -146,8 +146,8 @@ def _run_verify_cli(args) -> int:
     for shock_name in ("null", "warm_ocean", "monsoon_stall") * ((args.calls + 2) // 3):
         if len(latencies) >= args.calls:
             break
-        from monsoon_r1.scoring import make_shock
-        pert = make_shock(shock_name, init[-1]).astype(np.float32)
+        from monsoon_r1.scoring import STD_DEFAULT, make_shock
+        pert = make_shock(shock_name, init[-1], STD_DEFAULT).astype(np.float32)
         payload = {
             "init_states": _encode_arr(init),
             "doy_sincos": sc,

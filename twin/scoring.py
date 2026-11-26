@@ -152,7 +152,8 @@ def null_consistent(a: np.ndarray, b: np.ndarray, std: np.ndarray) -> bool:
     return bool((np.abs(a - b) / std[None, :, None, None]).max() <= NULL_TOL)
 
 
-def make_shock(name: str, last_state: np.ndarray) -> np.ndarray:
+def make_shock(name: str, last_state: np.ndarray, std: np.ndarray | None = None) -> np.ndarray:
+    _ = std
     d = np.zeros((NC, NLAT, NLON), "f4")
     if name == "warm_ocean":
         m = box_mask(BOX_BAY_OF_BENGAL)
