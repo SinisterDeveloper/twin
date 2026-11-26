@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import os
 import time
 from pathlib import Path
 from typing import Callable
@@ -194,7 +195,7 @@ def make_predictor(
         import onnxruntime as ort
 
         opts = ort.SessionOptions()
-        opts.intra_op_num_threads = 4
+        opts.intra_op_num_threads = min(4, os.cpu_count() or 2)
         for p in onnx_paths:
             sess = ort.InferenceSession(str(p), sess_options=opts, providers=["CPUExecutionProvider"])
             runners.append(("onnx", sess))

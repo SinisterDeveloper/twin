@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 import time
 from pathlib import Path
 
@@ -49,7 +50,7 @@ def export_checkpoint_to_onnx(
     import onnxruntime as ort
 
     opts = ort.SessionOptions()
-    opts.intra_op_num_threads = 4
+    opts.intra_op_num_threads = min(4, os.cpu_count() or 2)
     sess = ort.InferenceSession(str(onnx_out), sess_options=opts, providers=["CPUExecutionProvider"])
     with torch.no_grad():
         pt_out = model(z_dummy, sc_dummy).numpy()

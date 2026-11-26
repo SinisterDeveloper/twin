@@ -146,4 +146,6 @@ def shock_stability_loss(
     tp_pert = torch.expm1(torch.clamp(zp[:, :, 1] * a_std[:, :, 1] + clim_sel[:, :, 1], 0.0, 8.0))
     tp_z = torch.abs(tp_pert - tp_base) / phys_std[1].float()
     all_z = torch.abs(zp - zb) * a_std / p_std
-    return F.relu(tp_z - 2.8).pow(2).mean() + 0.25 * F.relu(all_z - 3.5).pow(2).mean()
+    tp_peak = tp_z.amax(dim=(-2, -1))
+    all_peak = all_z.amax(dim=(-2, -1))
+    return F.relu(tp_peak - 3.0).pow(2).mean() + 0.25 * F.relu(all_peak - 3.5).pow(2).mean()

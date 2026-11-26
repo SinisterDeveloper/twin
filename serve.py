@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import base64
 import json
+import os
 import time
 from pathlib import Path
 
@@ -34,7 +35,7 @@ def _load_artifacts() -> None:
         meta = json.loads(stats_p.read_text())
         _ANOM_STD = np.array(meta["anom_std"], dtype=np.float32)
         opts = ort.SessionOptions()
-        opts.intra_op_num_threads = 4
+        opts.intra_op_num_threads = min(4, os.cpu_count() or 2)
         _SESSIONS = [ort.InferenceSession(str(p), sess_options=opts, providers=["CPUExecutionProvider"]) for p in onnx_files]
 
         weights_p = ART_DIR / "ensemble_weights.json"
