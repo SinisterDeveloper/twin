@@ -125,6 +125,7 @@ export function IndiaGridMap({
 
   const [internalView, setInternalView] = useState<MapViewState>(DEFAULT_MAP_VIEW);
   const [isDragging, setIsDragging] = useState(false);
+  const [animateTransform, setAnimateTransform] = useState(false);
   const [hover, setHover] = useState<{ i: number; j: number; lat: number; lon: number } | null>(null);
 
   const activeView = view ?? internalView;
@@ -136,15 +137,56 @@ export function IndiaGridMap({
     }
   };
 
+  const activeViewRef = useRef<MapViewState>(activeView);
+  activeViewRef.current = activeView;
+  const setViewRef = useRef(setView);
+  setViewRef.current = setView;
+
   const zoomBy = (delta: number) => {
     const nextZoom = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, activeView.zoom + delta));
     const ratio = nextZoom / activeView.zoom;
+    setAnimateTransform(true);
     setView(clampView(nextZoom, activeView.panX * ratio, activeView.panY * ratio));
   };
 
   const resetZoom = () => {
+    setAnimateTransform(true);
     setView(DEFAULT_MAP_VIEW);
   };
+
+  useEffect(() => {
+    const el = viewportRef.current;
+    if (!el) return;
+
+    const onWheel = (e: WheelEvent) => {
+      e.preventDefault();
+      if (e.deltaY === 0) return;
+
+      const clampedDelta = Math.max(-180, Math.min(180, e.deltaY));
+      const curr = activeViewRef.current;
+      const factor = Math.exp(-clampedDelta * 0.0022);
+      const nextZoom = Math.min(
+        MAX_ZOOM,
+        Math.max(MIN_ZOOM, Math.round(curr.zoom * factor * 100) / 100),
+      );
+      if (nextZoom === curr.zoom) return;
+
+      const rect = el.getBoundingClientRect();
+      if (rect.width <= 0 || rect.height <= 0) return;
+
+      const cx = (e.clientX - rect.left) / rect.width - 0.5;
+      const cy = (e.clientY - rect.top) / rect.height - 0.5;
+      const ratio = nextZoom / curr.zoom;
+      const nextPanX = cx - (cx - curr.panX) * ratio;
+      const nextPanY = cy - (cy - curr.panY) * ratio;
+
+      setAnimateTransform(false);
+      setViewRef.current(clampView(nextZoom, nextPanX, nextPanY));
+    };
+
+    el.addEventListener("wheel", onWheel, { passive: false });
+    return () => el.removeEventListener("wheel", onWheel);
+  }, []);
 
   const isDelta = mode === "delta";
   const meta = CHANNEL_META[channel];
@@ -251,6 +293,7 @@ export function IndiaGridMap({
   const handlePointerDown = (e: React.PointerEvent<SVGSVGElement>) => {
     if (e.button === 0 && activeView.zoom > 1) {
       e.currentTarget.setPointerCapture(e.pointerId);
+      setAnimateTransform(false);
       dragRef.current = {
         pointerId: e.pointerId,
         startX: e.clientX,
@@ -349,7 +392,7 @@ export function IndiaGridMap({
         className={`relative mx-auto w-full ${compact ? "" : "max-w-[680px]"} aspect-[36/32] overflow-hidden rounded-lg border border-zinc-800 bg-slate-950 shadow-2xl`}
       >
         <div
-          className={`relative h-full w-full ${isDragging ? "" : "transition-transform duration-150 ease-out"}`}
+          className={`relative h-full w-full ${animateTransform && !isDragging ? "transition-transform duration-150 ease-out" : ""}`}
           style={{
             transform: `translate(${activeView.panX * 100}%, ${activeView.panY * 100}%) scale(${activeView.zoom})`,
             transformOrigin: "center center",
