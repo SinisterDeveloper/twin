@@ -1,4 +1,6 @@
+import type { ReactNode } from "react";
 import type { ImpactMetrics, PhysicsMetrics, ShockPreset } from "../lib/shocks";
+import { AnimatedNumber } from "./AnimatedNumber";
 
 interface TelemetryImpactPanelProps {
   wallMs: number | null;
@@ -15,15 +17,24 @@ export function TelemetryImpactPanel({
 }: TelemetryImpactPanelProps) {
   const hasBranch = preset !== "none";
 
-  const validationItems: { label: string; value: string; ok: boolean | null }[] = [
+  const validationItems: { label: string; value: ReactNode; ok: boolean | null }[] = [
     {
       label: "Latency",
-      value: wallMs !== null ? `${wallMs.toFixed(0)} ms` : "—",
+      value:
+        wallMs !== null ? (
+          <AnimatedNumber value={wallMs} decimals={0} duration={280} suffix=" ms" />
+        ) : (
+          "—"
+        ),
       ok: wallMs !== null ? wallMs <= 5000 : null,
     },
     {
       label: "Stability",
-      value: physics ? `${physics.maxNormDelta.toFixed(3)} σ` : "—",
+      value: physics ? (
+        <AnimatedNumber value={physics.maxNormDelta} decimals={3} suffix=" σ" />
+      ) : (
+        "—"
+      ),
       ok: physics ? physics.stable : null,
     },
     {
@@ -35,9 +46,11 @@ export function TelemetryImpactPanel({
     {
       label: "Day-1 Locality",
       value:
-        physics && physics.day1NearFrac !== null
-          ? `${(physics.day1NearFrac * 100).toFixed(0)}%`
-          : "N/A",
+        physics && physics.day1NearFrac !== null ? (
+          <AnimatedNumber value={physics.day1NearFrac * 100} decimals={0} suffix="%" />
+        ) : (
+          "N/A"
+        ),
       ok: physics ? physics.localized : null,
     },
   ];
@@ -61,13 +74,21 @@ export function TelemetryImpactPanel({
                 Heavy Rain (&gt;10 mm/d)
               </div>
               <div className="mt-1 font-mono text-xl font-semibold tracking-tight tabular-nums text-zinc-50">
-                {hasBranch ? impact.shockHeavyRainCells : impact.baseHeavyRainCells}
+                <AnimatedNumber
+                  value={hasBranch ? impact.shockHeavyRainCells : impact.baseHeavyRainCells}
+                  decimals={0}
+                />
                 <span className="ml-1.5 text-[11px] font-normal text-zinc-500">cell-days</span>
               </div>
               {hasBranch && (
                 <div className="mt-0.5 font-mono text-[11px] tabular-nums text-zinc-500">
-                  Δ {impact.shockHeavyRainCells - impact.baseHeavyRainCells >= 0 ? "+" : ""}
-                  {impact.shockHeavyRainCells - impact.baseHeavyRainCells} vs {impact.baseHeavyRainCells}
+                  Δ{" "}
+                  <AnimatedNumber
+                    value={impact.shockHeavyRainCells - impact.baseHeavyRainCells}
+                    decimals={0}
+                    signed
+                  />{" "}
+                  vs <AnimatedNumber value={impact.baseHeavyRainCells} decimals={0} />
                 </div>
               )}
             </div>
@@ -77,11 +98,14 @@ export function TelemetryImpactPanel({
                 Heat Stress (&gt;40 °C)
               </div>
               <div className="mt-1 font-mono text-xl font-semibold tracking-tight tabular-nums text-zinc-50">
-                {hasBranch ? impact.shockHeatwaveCells : impact.baseHeatwaveCells}
+                <AnimatedNumber
+                  value={hasBranch ? impact.shockHeatwaveCells : impact.baseHeatwaveCells}
+                  decimals={0}
+                />
                 <span className="ml-1.5 text-[11px] font-normal text-zinc-500">cell-days</span>
               </div>
               <div className="mt-0.5 font-mono text-[11px] tabular-nums text-zinc-500">
-                Peak {impact.peakTempC.toFixed(1)} °C
+                Peak <AnimatedNumber value={impact.peakTempC} decimals={1} suffix=" °C" />
               </div>
             </div>
 
@@ -90,12 +114,20 @@ export function TelemetryImpactPanel({
                 Wind Power (v³)
               </div>
               <div className="mt-1 font-mono text-xl font-semibold tracking-tight tabular-nums text-zinc-50">
-                {hasBranch
-                  ? `${impact.windPowerDeltaPct >= 0 ? "+" : ""}${impact.windPowerDeltaPct.toFixed(1)}%`
-                  : `${impact.baseMeanWindMs.toFixed(1)} m/s`}
+                <AnimatedNumber
+                  value={hasBranch ? impact.windPowerDeltaPct : impact.baseMeanWindMs}
+                  decimals={1}
+                  signed={hasBranch}
+                  suffix={hasBranch ? "%" : " m/s"}
+                />
               </div>
               <div className="mt-0.5 font-mono text-[11px] tabular-nums text-zinc-500">
-                Mean {(hasBranch ? impact.shockMeanWindMs : impact.baseMeanWindMs).toFixed(2)} m/s
+                Mean{" "}
+                <AnimatedNumber
+                  value={hasBranch ? impact.shockMeanWindMs : impact.baseMeanWindMs}
+                  decimals={2}
+                  suffix=" m/s"
+                />
               </div>
             </div>
 
@@ -104,11 +136,15 @@ export function TelemetryImpactPanel({
                 Crop Stress
               </div>
               <div className="mt-1 font-mono text-xl font-semibold tracking-tight tabular-nums text-zinc-50">
-                {(hasBranch ? impact.shockCropStressPct : impact.baseCropStressPct).toFixed(1)}%
+                <AnimatedNumber
+                  value={hasBranch ? impact.shockCropStressPct : impact.baseCropStressPct}
+                  decimals={1}
+                  suffix="%"
+                />
               </div>
               {hasBranch && (
                 <div className="mt-0.5 font-mono text-[11px] tabular-nums text-zinc-500">
-                  Baseline {impact.baseCropStressPct.toFixed(1)}%
+                  Baseline <AnimatedNumber value={impact.baseCropStressPct} decimals={1} suffix="%" />
                 </div>
               )}
             </div>

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState, type CSSProperties } from "react";
+import { AnimatedNumber } from "./components/AnimatedNumber";
 import { DayScrubber } from "./components/DayScrubber";
 import { DEFAULT_MAP_VIEW, IndiaGridMap, type MapViewState } from "./components/IndiaGridMap";
 import { ShockBuilder } from "./components/ShockBuilder";
@@ -372,8 +373,10 @@ export default function App() {
               <span className="text-xs font-medium text-zinc-200">{meta.label}</span>
               <span className="text-zinc-700">·</span>
               <span className="font-mono text-[11px] tabular-nums text-zinc-400">
-                {day === 0 ? "Day 0" : `Day +${day}`} · Min {stats.min.toFixed(1)} / Mean{" "}
-                {stats.mean.toFixed(1)} / Max {stats.max.toFixed(1)} {unit}
+                {day === 0 ? "Day 0" : `Day +${day}`} · Min{" "}
+                <AnimatedNumber value={stats.min} decimals={1} duration={300} /> / Mean{" "}
+                <AnimatedNumber value={stats.mean} decimals={1} duration={300} /> / Max{" "}
+                <AnimatedNumber value={stats.max} decimals={1} duration={300} /> {unit}
               </span>
             </div>
 
