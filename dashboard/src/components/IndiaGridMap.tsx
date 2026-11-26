@@ -16,7 +16,7 @@ import {
   type ChannelKey,
   type GeoBox,
 } from "../lib/contract";
-import { INDIA_STATE_PATHS, NEIGHBOR_COUNTRY_PATHS } from "../lib/geo";
+import { INDIA_OUTLINE_PATHS, INDIA_STATE_PATHS, NEIGHBOR_COUNTRY_PATHS } from "../lib/geo";
 import {
   channelColormap,
   cssLinearGradient,
@@ -520,30 +520,27 @@ export function IndiaGridMap({
             </g>
           ))}
 
-          {/* Real India Coastline & State Boundaries */}
-          {INDIA_STATE_PATHS.map((st, idx) => (
-            <path
-              key={`state-${idx}`}
-              d={st.d}
-              fill="none"
-              stroke="rgba(0, 0, 0, 0.65)"
-              strokeWidth={showStates ? 1.7 : 1.0}
-              strokeLinejoin="round"
-              strokeLinecap="round"
-            />
-          ))}
-          {showStates &&
-            INDIA_STATE_PATHS.map((st, idx) => (
+          {/* Real India Coastline & State Boundaries (national outline only when State Borders is off) */}
+          {(showStates ? INDIA_STATE_PATHS : INDIA_OUTLINE_PATHS).map((border, idx) => (
+            <g key={`india-border-${idx}`}>
               <path
-                key={`state-fg-${idx}`}
-                d={st.d}
+                d={border.d}
+                fill="none"
+                stroke="rgba(0, 0, 0, 0.65)"
+                strokeWidth={1.7}
+                strokeLinejoin="round"
+                strokeLinecap="round"
+              />
+              <path
+                d={border.d}
                 fill="none"
                 stroke="rgba(255, 255, 255, 0.86)"
                 strokeWidth={0.85}
                 strokeLinejoin="round"
                 strokeLinecap="round"
               />
-            ))}
+            </g>
+          ))}
 
           {boxes.map((box) => {
             const x = lonToX(box.lon0 - 0.5);

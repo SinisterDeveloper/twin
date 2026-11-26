@@ -104,3 +104,12 @@ export const NEIGHBOR_COUNTRY_PATHS: NamedGeoPath[] = worldCollection.features
     d: geometryToPath(f.geometry),
   }))
   .filter((item) => item.d.length > 0);
+
+// 3. India national outline only (used when internal State Borders are hidden)
+export const INDIA_OUTLINE_PATHS: NamedGeoPath[] = worldCollection.features
+  .filter((f) => String(f.id ?? "") === "356")
+  .map((f) => ({
+    name: String(f.properties?.name ?? "India"),
+    d: geometryToPath(f.geometry),
+  }))
+  .filter((item) => item.d.length > 0);
