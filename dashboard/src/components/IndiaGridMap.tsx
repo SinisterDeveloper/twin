@@ -368,28 +368,21 @@ export function IndiaGridMap({
   const unitLabel = isDelta && channel === "t2m" ? (useCelsius ? "°C" : "K") : meta.displayUnit(useCelsius);
 
   return (
-    <div className={`flex flex-col rounded-xl border border-zinc-800/80 bg-zinc-950 ${compact ? "p-2.5" : "p-3.5"}`}>
+    <div className={`flex flex-col rounded-xl border border-zinc-900 bg-zinc-950/60 ${compact ? "p-2.5" : "p-3"}`}>
       {(title || subtitle) && (
-        <div className="mb-2 flex items-center justify-between gap-2">
-          <div className="min-w-0">
-            {title && (
-              <h3 className={`truncate font-medium tracking-tight text-zinc-100 ${compact ? "text-xs" : "text-sm"}`}>
-                {title}
-              </h3>
-            )}
-            {subtitle && <p className="truncate text-[11px] text-zinc-500">{subtitle}</p>}
-          </div>
-          {!compact && (
-            <span className="shrink-0 rounded-md border border-zinc-800 bg-black px-2 py-0.5 font-mono text-[11px] tabular-nums text-zinc-400">
-              6.5°–37.5°N · 65.5°–100.5°E
-            </span>
+        <div className="mb-2 flex items-baseline justify-between gap-2 px-0.5">
+          <h3 className={`truncate font-medium tracking-tight text-zinc-100 ${compact ? "text-xs" : "text-[13px]"}`}>
+            {title}
+          </h3>
+          {subtitle && (
+            <span className="shrink-0 truncate text-[11px] text-zinc-500">{subtitle}</span>
           )}
         </div>
       )}
 
       <div
         ref={viewportRef}
-        className={`relative mx-auto w-full ${compact ? "" : "max-w-[680px]"} aspect-[36/32] overflow-hidden rounded-lg border border-zinc-800 bg-slate-950 shadow-2xl`}
+        className={`relative mx-auto w-full ${compact ? "" : "max-w-[700px]"} aspect-[36/32] overflow-hidden rounded-lg border border-zinc-800/80 bg-slate-950 shadow-2xl`}
       >
         <div
           className={`relative h-full w-full ${animateTransform && !isDragging ? "transition-transform duration-150 ease-out" : ""}`}
@@ -644,9 +637,9 @@ export function IndiaGridMap({
             </svg>
         </div>
 
-        {/* Bottom-right Zoom Controls */}
+        {/* Bottom-right Zoom Controls (offset above 100°E axis label) */}
         <div
-          className="absolute bottom-2.5 right-2.5 z-10 flex flex-col items-end gap-1"
+          className="absolute bottom-5 right-2.5 z-10 flex flex-col items-end gap-1"
           onPointerDown={(e) => e.stopPropagation()}
           onClick={(e) => e.stopPropagation()}
         >
@@ -714,7 +707,7 @@ export function IndiaGridMap({
       </div>
 
       {/* Meteorological 5-Tick Colorbar */}
-      <div className={`mx-auto mt-2.5 w-full ${compact ? "" : "max-w-[680px]"}`}>
+      <div className={`mx-auto mt-2.5 w-full ${compact ? "" : "max-w-[700px]"}`}>
         <div
           className="h-2 w-full rounded-full border border-zinc-800"
           style={{ background: cssLinearGradient(cmap) }}

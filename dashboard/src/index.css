@@ -1,6 +1,12 @@
 @import "tailwindcss";
 
 @layer base {
+  html {
+    color-scheme: dark;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
   html,
   body,
   #root {
@@ -20,7 +26,7 @@
 input[type="range"].shadcn-slider {
   -webkit-appearance: none;
   appearance: none;
-  height: 4px;
+  height: 3px;
   border-radius: 9999px;
   background: #27272a;
   outline: none;
@@ -29,8 +35,8 @@ input[type="range"].shadcn-slider {
 input[type="range"].shadcn-slider::-webkit-slider-thumb {
   -webkit-appearance: none;
   appearance: none;
-  width: 13px;
-  height: 13px;
+  width: 12px;
+  height: 12px;
   border-radius: 9999px;
   background: #fafafa;
   border: 1.5px solid #09090b;
@@ -45,8 +51,8 @@ input[type="range"].shadcn-slider::-webkit-slider-thumb:hover {
 }
 
 input[type="range"].shadcn-slider::-moz-range-thumb {
-  width: 13px;
-  height: 13px;
+  width: 12px;
+  height: 12px;
   border-radius: 9999px;
   background: #fafafa;
   border: 1.5px solid #09090b;

@@ -253,25 +253,28 @@ export default function App() {
   return (
     <div className="min-h-screen bg-black text-zinc-50">
       {/* Slim Header */}
-      <header className="sticky top-0 z-20 h-14 border-b border-zinc-900 bg-black/80 px-5 backdrop-blur-md">
-        <div className="mx-auto flex h-full max-w-[1460px] items-center justify-between gap-3">
+      <header className="sticky top-0 z-20 h-12 border-b border-zinc-900 bg-black/85 px-5 backdrop-blur-md">
+        <div className="mx-auto flex h-full max-w-[1440px] items-center justify-between gap-3">
           <div className="flex items-center gap-2.5">
             <span className="h-2 w-2 rounded-full bg-zinc-100" />
-            <h1 className="text-sm font-semibold tracking-tight text-zinc-100">
+            <h1 className="text-[13px] font-semibold tracking-tight text-zinc-100">
               Multiverse of Monsoon
             </h1>
-            <span className="hidden text-xs text-zinc-600 sm:inline">/</span>
-            <span className="hidden text-xs text-zinc-500 sm:inline">Climate Digital Twin</span>
+            <span className="hidden text-xs text-zinc-700 sm:inline">/</span>
+            <span className="hidden text-xs text-zinc-500 sm:inline">India Climate Twin</span>
           </div>
 
           <div className="flex items-center gap-2 text-xs">
-            <div className="flex items-center gap-2 rounded-full border border-zinc-800 bg-zinc-950 px-2.5 py-1 text-zinc-300">
+            <div
+              title={health ? health.model_name : (healthError ?? "Offline fallback")}
+              className="flex items-center gap-2 rounded-full border border-zinc-900 bg-zinc-950 px-2.5 py-1 text-zinc-300"
+            >
               <span
                 className={`h-1.5 w-1.5 rounded-full ${health ? "bg-emerald-400" : "bg-amber-400"}`}
               />
               {health ? (
-                <span className="font-mono text-[11px] tabular-nums">
-                  {health.model_name} · {health.latency_ms.toFixed(0)}ms
+                <span className="font-mono text-[11px] tabular-nums text-zinc-300">
+                  Live · {activeSim ? `${activeSim.inference_ms.toFixed(1)}ms` : `${health.latency_ms.toFixed(0)}ms`}
                 </span>
               ) : (
                 <span className="font-mono text-[11px] text-zinc-400">
@@ -280,28 +283,23 @@ export default function App() {
               )}
             </div>
 
-            {activeSim && (
-              <span className="hidden rounded-full border border-zinc-800 bg-zinc-950 px-2.5 py-1 font-mono text-[11px] tabular-nums text-zinc-400 sm:inline-block">
-                {activeSim.source.toUpperCase()} · {activeSim.inference_ms.toFixed(1)}ms
-              </span>
-            )}
-
             <button
               type="button"
+              aria-label="Refresh health"
+              title={health ? `Refresh health (${health.model_name})` : "Refresh health"}
               onClick={() => void checkServerHealth()}
-              className="flex h-7 items-center gap-1.5 rounded-md border border-zinc-800 bg-zinc-950 px-2.5 text-[11px] font-medium text-zinc-300 transition hover:bg-zinc-900 hover:text-zinc-100"
+              className="flex h-7 w-7 items-center justify-center rounded-md border border-zinc-900 bg-zinc-950 text-zinc-400 transition hover:border-zinc-800 hover:bg-zinc-900 hover:text-zinc-100"
             >
-              <RefreshCw className="h-3 w-3" />
-              Health
+              <RefreshCw className="h-3.5 w-3.5" />
             </button>
           </div>
         </div>
       </header>
 
       {/* Main Workspace */}
-      <main className="mx-auto grid max-w-[1460px] grid-cols-1 gap-4 p-4 md:grid-cols-[276px_1fr]">
-        {/* Left Sidebar */}
-        <aside className="flex flex-col gap-3">
+      <main className="mx-auto grid max-w-[1440px] grid-cols-1 md:grid-cols-[268px_1fr]">
+        {/* Unified Left Sidebar Rail */}
+        <aside className="flex flex-col gap-5 border-b border-zinc-900 px-4 py-4 md:border-b-0 md:border-r">
           <ShockBuilder
             preset={shockPreset}
             custom={customShock}
@@ -311,11 +309,11 @@ export default function App() {
             onRunBranch={() => void runSimulation()}
           />
 
-          <section className="rounded-xl border border-zinc-800/80 bg-zinc-950 p-3.5">
+          <section className="border-t border-zinc-900 pt-4">
             <div className="mb-2.5 text-[11px] font-medium uppercase tracking-wider text-zinc-500">
               Variables
             </div>
-            <div className="grid grid-cols-2 gap-1.5">
+            <div className="grid grid-cols-3 gap-1.5">
               {CHANNELS.map((key) => {
                 const m = CHANNEL_META[key];
                 const active = key === channel;
@@ -324,13 +322,13 @@ export default function App() {
                     key={key}
                     type="button"
                     onClick={() => setChannel(key)}
-                    className={`rounded-md border px-2.5 py-2 text-left transition ${
+                    className={`rounded-md border px-2 py-1.5 text-left transition ${
                       active
-                        ? "border-zinc-200 bg-zinc-100 text-zinc-950"
-                        : "border-zinc-800/80 bg-black text-zinc-300 hover:border-zinc-700 hover:bg-zinc-900/60"
+                        ? "border-white bg-white text-black"
+                        : "border-zinc-900 bg-zinc-950 text-zinc-300 hover:border-zinc-700 hover:text-zinc-100"
                     }`}
                   >
-                    <div className="font-mono text-xs font-semibold">{m.key}</div>
+                    <div className="font-mono text-[11px] font-semibold">{m.key}</div>
                     <div className={`truncate text-[10px] ${active ? "text-zinc-600" : "text-zinc-500"}`}>
                       {m.shortLabel.replace(/\s*\(.*\)/, "")}
                     </div>
@@ -339,7 +337,10 @@ export default function App() {
               })}
             </div>
 
-            <div className="mt-3 flex flex-col gap-1.5 border-t border-zinc-900 pt-3">
+            <div className="mt-3.5 flex flex-col gap-1 border-t border-zinc-900 pt-3">
+              <div className="mb-1 text-[10px] font-medium uppercase tracking-wider text-zinc-600">
+                Map Layers
+              </div>
               <SwitchRow label="Temperature in °C" checked={useCelsius} onChange={setUseCelsius} />
               <SwitchRow label="Wind Streamlines" checked={showVectors} onChange={setShowVectors} />
               <SwitchRow label="Smooth Radar Grid" checked={smoothGrid} onChange={setSmoothGrid} />
@@ -349,22 +350,22 @@ export default function App() {
             </div>
           </section>
 
-          <section className="rounded-xl border border-zinc-800/80 bg-zinc-950 p-3.5">
+          <section className="border-t border-zinc-900 pt-4">
             <div className="mb-2.5 flex items-center justify-between gap-2">
               <span className="text-[11px] font-medium uppercase tracking-wider text-zinc-500">
                 Season & Initial State
               </span>
               <span
-                className={`rounded border px-1.5 py-0.5 font-mono text-[10px] tabular-nums ${
+                className={`shrink-0 whitespace-nowrap rounded border px-1.5 py-0.5 font-mono text-[10px] tabular-nums ${
                   activeDate
                     ? "border-emerald-800/70 bg-emerald-950/60 text-emerald-300"
-                    : "border-zinc-800 bg-black text-zinc-500"
+                    : "border-zinc-800 bg-zinc-950 text-zinc-500"
                 }`}
               >
                 {activeDate ? `ERA5 · ${activeDate}` : "Synthetic"}
               </span>
             </div>
-            <div className="flex flex-col gap-1">
+            <div className="flex flex-col gap-0.5">
               {SEASON_PRESETS.map((p) => {
                 const active = doy === p.doy;
                 return (
@@ -375,14 +376,16 @@ export default function App() {
                       setDoy(p.doy);
                       setDay(0);
                     }}
-                    className={`flex items-center justify-between rounded-md border px-2.5 py-1.5 text-left text-xs transition ${
+                    className={`flex items-center justify-between rounded-md px-2.5 py-1.5 text-left text-xs transition ${
                       active
-                        ? "border-zinc-200 bg-zinc-100 text-zinc-950"
-                        : "border-transparent bg-transparent text-zinc-400 hover:bg-zinc-900 hover:text-zinc-100"
+                        ? "bg-white text-black"
+                        : "text-zinc-400 hover:bg-zinc-900/70 hover:text-zinc-100"
                     }`}
                   >
                     <span className="font-medium">{p.name}</span>
-                    <span className="font-mono text-[10px] tabular-nums text-zinc-600">{p.doy}</span>
+                    <span className={`font-mono text-[10px] tabular-nums ${active ? "text-zinc-600" : "text-zinc-600"}`}>
+                      {p.doy}
+                    </span>
                   </button>
                 );
               })}
@@ -410,25 +413,25 @@ export default function App() {
         </aside>
 
         {/* Right Maps, Scrubber & Telemetry */}
-        <section className="flex flex-col gap-3">
-          {/* View Mode Bar */}
-          <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-zinc-800/80 bg-zinc-950 px-3.5 py-2">
-            <div className="flex items-center gap-2 text-xs">
-              <span className="font-medium text-zinc-200">{meta.label}</span>
-              <span className="text-zinc-600">·</span>
+        <section className="flex flex-col gap-3 p-4 lg:p-5">
+          {/* Borderless View Mode Bar */}
+          <div className="flex flex-wrap items-center justify-between gap-2 px-0.5">
+            <div className="flex flex-wrap items-baseline gap-2">
+              <span className="text-xs font-medium text-zinc-200">{meta.label}</span>
+              <span className="text-zinc-700">·</span>
               <span className="font-mono text-[11px] tabular-nums text-zinc-400">
                 {day === 0 ? "Day 0 (t=0)" : `Day +${day}`} · Min {stats.min.toFixed(1)} / Mean{" "}
                 {stats.mean.toFixed(1)} / Max {stats.max.toFixed(1)} {unit}
               </span>
             </div>
 
-            <div className="flex items-center gap-1 rounded-md border border-zinc-800 bg-black p-0.5 text-[11px]">
+            <div className="flex items-center gap-0.5 rounded-md border border-zinc-900 bg-zinc-950 p-0.5 text-[11px]">
               <button
                 type="button"
                 onClick={() => setViewMode("single")}
                 className={`flex items-center gap-1.5 rounded px-2.5 py-1 font-medium transition ${
                   viewMode === "single"
-                    ? "bg-zinc-100 text-zinc-950"
+                    ? "bg-white text-black"
                     : "text-zinc-400 hover:text-zinc-200"
                 }`}
               >
@@ -440,7 +443,7 @@ export default function App() {
                 onClick={() => setViewMode("compare")}
                 className={`flex items-center gap-1.5 rounded px-2.5 py-1 font-medium transition ${
                   viewMode === "compare"
-                    ? "bg-zinc-100 text-zinc-950"
+                    ? "bg-white text-black"
                     : "text-zinc-400 hover:text-zinc-200"
                 }`}
               >
