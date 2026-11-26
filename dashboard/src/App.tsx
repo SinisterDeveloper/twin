@@ -1,12 +1,15 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Play, RefreshCw } from "lucide-react";
+import { Columns3, Maximize2, RefreshCw } from "lucide-react";
 import { DayScrubber } from "./components/DayScrubber";
 import { IndiaGridMap } from "./components/IndiaGridMap";
+import { ShockBuilder } from "./components/ShockBuilder";
+import { TelemetryImpactPanel } from "./components/TelemetryImpactPanel";
 import {
   fetchHealth,
   mockSimulate,
   postSimulate,
   type HealthResponse,
+  type SimulateRequest,
   type SimulateResponse,
 } from "./lib/api";
 import {
@@ -19,6 +22,15 @@ import {
   SEASON_PRESETS,
   type ChannelKey,
 } from "./lib/contract";
+import {
+  buildPerturbation,
+  computeDeltaGrid,
+  computeImpactMetrics,
+  computePhysicsMetrics,
+  SHOCK_PRESET_META,
+  type CustomShockConfig,
+  type ShockPreset,
+} from "./lib/shocks";
 
 interface SwitchRowProps {
   label: string;
@@ -38,9 +50,7 @@ function SwitchRow({ label, checked, onChange }: SwitchRowProps) {
       <span>{label}</span>
       <span
         className={`relative inline-flex h-4 w-7 shrink-0 items-center rounded-full border transition ${
-          checked
-            ? "border-zinc-200 bg-zinc-100"
-            : "border-zinc-700 bg-zinc-900"
+          checked ? "border-zinc-200 bg-zinc-100" : "border-zinc-700 bg-zinc-900"
         }`}
       >
         <span
@@ -62,17 +72,32 @@ export default function App() {
   const [showBoxes, setShowBoxes] = useState<boolean>(true);
   const [showCities, setShowCities] = useState<boolean>(true);
 
+  const [shockPreset, setShockPreset] = useState<ShockPreset>("none");
+  const [customShock, setCustomShock] = useState<CustomShockConfig>({
+    channel: "t2m",
+    lat: 15.5,
+    lon: 73.5,
+    radiusDeg: 2.5,
+    intensity: 3.0,
+  });
+  const [viewMode, setViewMode] = useState<"single" | "compare">("single");
+
   const [day, setDay] = useState<number>(0);
   const [playing, setPlaying] = useState<boolean>(false);
   const [speed, setSpeed] = useState<number>(1);
 
   const [health, setHealth] = useState<HealthResponse | null>(null);
   const [healthError, setHealthError] = useState<string | null>(null);
-  const [simResult, setSimResult] = useState<SimulateResponse | null>(null);
+  const [baseResult, setBaseResult] = useState<SimulateResponse | null>(null);
+  const [shockResult, setShockResult] = useState<SimulateResponse | null>(null);
   const [loadingSim, setLoadingSim] = useState<boolean>(false);
   const [preferMock, setPreferMock] = useState<boolean>(false);
 
   const initStates = useMemo(() => buildDefaultInitStates(doy), [doy]);
+  const perturbation = useMemo(
+    () => buildPerturbation(shockPreset, initStates[initStates.length - 1], customShock),
+    [shockPreset, initStates, customShock],
+  );
 
   const checkServerHealth = useCallback(async () => {
     try {
@@ -87,28 +112,47 @@ export default function App() {
     }
   }, []);
 
+  const executeSim = useCallback(
+    async (req: SimulateRequest): Promise<SimulateResponse> => {
+      if (preferMock) return mockSimulate(req);
+      try {
+        return await postSimulate(req);
+      } catch {
+        return mockSimulate(req);
+      }
+    },
+    [preferMock],
+  );
+
   const runSimulation = useCallback(async () => {
     setLoadingSim(true);
-    const req = {
+    const sc = doySinCos(doy);
+    const baseReq: SimulateRequest = {
       init_states: initStates,
-      doy_sincos: doySinCos(doy),
+      doy_sincos: sc,
       steps: SCORE_STEPS,
       perturbation: null,
     };
     try {
-      if (preferMock) {
-        setSimResult(mockSimulate(req));
+      if (perturbation) {
+        const shockReq: SimulateRequest = {
+          init_states: initStates,
+          doy_sincos: sc,
+          steps: SCORE_STEPS,
+          perturbation,
+        };
+        const [bRes, sRes] = await Promise.all([executeSim(baseReq), executeSim(shockReq)]);
+        setBaseResult(bRes);
+        setShockResult(sRes);
       } else {
-        const res = await postSimulate(req);
-        setSimResult(res);
-        setHealthError(null);
+        const bRes = await executeSim(baseReq);
+        setBaseResult(bRes);
+        setShockResult(null);
       }
-    } catch {
-      setSimResult(mockSimulate(req));
     } finally {
       setLoadingSim(false);
     }
-  }, [initStates, doy, preferMock]);
+  }, [initStates, doy, perturbation, executeSim]);
 
   useEffect(() => {
     void checkServerHealth();
@@ -126,24 +170,70 @@ export default function App() {
     return () => window.clearInterval(id);
   }, [playing, speed]);
 
-  const activeGrid = useMemo(() => {
-    if (day === 0 || !simResult) return initStates[initStates.length - 1];
-    return simResult.rollout[day - 1] ?? initStates[initStates.length - 1];
-  }, [day, simResult, initStates]);
+  const handlePresetChange = (next: ShockPreset) => {
+    setShockPreset(next);
+    if (next === "none") {
+      setViewMode("single");
+    } else {
+      setViewMode("compare");
+      if (day === 0) setDay(1);
+    }
+  };
+
+  const baseActiveGrid = useMemo(() => {
+    if (day === 0 || !baseResult) return initStates[initStates.length - 1];
+    return baseResult.rollout[day - 1] ?? initStates[initStates.length - 1];
+  }, [day, baseResult, initStates]);
+
+  const shockActiveGrid = useMemo(() => {
+    if (!perturbation) return baseActiveGrid;
+    if (day === 0) {
+      return initStates[initStates.length - 1].map((ch, c) =>
+        ch.map((row, i) => row.map((v, j) => v + perturbation[c][i][j])),
+      );
+    }
+    return shockResult?.rollout[day - 1] ?? baseActiveGrid;
+  }, [day, perturbation, shockResult, initStates, baseActiveGrid]);
+
+  const deltaActiveGrid = useMemo(
+    () => computeDeltaGrid(shockActiveGrid, baseActiveGrid),
+    [shockActiveGrid, baseActiveGrid],
+  );
+
+  const physicsMetrics = useMemo(() => {
+    if (!baseResult || !shockResult || shockPreset === "none") return null;
+    return computePhysicsMetrics(baseResult.rollout, shockResult.rollout, shockPreset, customShock);
+  }, [baseResult, shockResult, shockPreset, customShock]);
+
+  const impactMetrics = useMemo(() => {
+    if (!baseResult) return null;
+    return computeImpactMetrics(baseResult.rollout, shockResult ? shockResult.rollout : baseResult.rollout);
+  }, [baseResult, shockResult]);
 
   const stats = useMemo(
-    () => computeFieldStats(activeGrid[CHANNEL_META[channel].index], channel, useCelsius),
-    [activeGrid, channel, useCelsius],
+    () => computeFieldStats(baseActiveGrid[CHANNEL_META[channel].index], channel, useCelsius),
+    [baseActiveGrid, channel, useCelsius],
   );
 
   const meta = CHANNEL_META[channel];
   const unit = meta.displayUnit(useCelsius);
+  const activeSim = shockResult ?? baseResult;
+  const highlightBox = SHOCK_PRESET_META[shockPreset].box;
+  const customRing =
+    shockPreset === "custom"
+      ? { lat: customShock.lat, lon: customShock.lon, radiusDeg: customShock.radiusDeg }
+      : null;
+
+  const handleMapClick =
+    shockPreset === "custom"
+      ? (lat: number, lon: number) => setCustomShock((prev) => ({ ...prev, lat, lon }))
+      : undefined;
 
   return (
     <div className="min-h-screen bg-black text-zinc-50">
       {/* Slim Header */}
       <header className="sticky top-0 z-20 h-14 border-b border-zinc-900 bg-black/80 px-5 backdrop-blur-md">
-        <div className="mx-auto flex h-full max-w-[1360px] items-center justify-between gap-3">
+        <div className="mx-auto flex h-full max-w-[1460px] items-center justify-between gap-3">
           <div className="flex items-center gap-2.5">
             <span className="h-2 w-2 rounded-full bg-zinc-100" />
             <h1 className="text-sm font-semibold tracking-tight text-zinc-100">
@@ -169,9 +259,9 @@ export default function App() {
               )}
             </div>
 
-            {simResult && (
+            {activeSim && (
               <span className="hidden rounded-full border border-zinc-800 bg-zinc-950 px-2.5 py-1 font-mono text-[11px] tabular-nums text-zinc-400 sm:inline-block">
-                {simResult.source.toUpperCase()} · {simResult.inference_ms.toFixed(1)}ms
+                {activeSim.source.toUpperCase()} · {activeSim.inference_ms.toFixed(1)}ms
               </span>
             )}
 
@@ -188,9 +278,18 @@ export default function App() {
       </header>
 
       {/* Main Workspace */}
-      <main className="mx-auto grid max-w-[1360px] grid-cols-1 gap-4 p-4 md:grid-cols-[272px_1fr]">
-        {/* Minimalist Control Sidebar */}
+      <main className="mx-auto grid max-w-[1460px] grid-cols-1 gap-4 p-4 md:grid-cols-[276px_1fr]">
+        {/* Left Sidebar */}
         <aside className="flex flex-col gap-3">
+          <ShockBuilder
+            preset={shockPreset}
+            custom={customShock}
+            loading={loadingSim}
+            onChangePreset={handlePresetChange}
+            onChangeCustom={setCustomShock}
+            onRunBranch={() => void runSimulation()}
+          />
+
           <section className="rounded-xl border border-zinc-800/80 bg-zinc-950 p-3.5">
             <div className="mb-2.5 text-[11px] font-medium uppercase tracking-wider text-zinc-500">
               Variables
@@ -250,9 +349,7 @@ export default function App() {
                     }`}
                   >
                     <span className="font-medium">{p.name}</span>
-                    <span className={`font-mono text-[10px] tabular-nums ${active ? "text-zinc-600" : "text-zinc-600"}`}>
-                      {p.doy}
-                    </span>
+                    <span className="font-mono text-[10px] tabular-nums text-zinc-600">{p.doy}</span>
                   </button>
                 );
               })}
@@ -273,35 +370,122 @@ export default function App() {
               />
             </div>
 
-            <div className="mt-3 flex flex-col gap-2.5 border-t border-zinc-900 pt-3">
+            <div className="mt-3 border-t border-zinc-900 pt-2.5">
               <SwitchRow label="Offline Demo Mode" checked={preferMock} onChange={setPreferMock} />
-
-              <button
-                type="button"
-                disabled={loadingSim}
-                onClick={() => void runSimulation()}
-                className="flex h-8 w-full items-center justify-center gap-1.5 rounded-md bg-zinc-100 px-3 text-xs font-medium text-zinc-950 transition hover:bg-white disabled:opacity-50"
-              >
-                <Play className="h-3.5 w-3.5" />
-                {loadingSim ? "Simulating..." : "Run Rollout"}
-              </button>
             </div>
           </section>
         </aside>
 
-        {/* Map, Scrubber & Metrics */}
+        {/* Right Maps, Scrubber & Telemetry */}
         <section className="flex flex-col gap-3">
-          <IndiaGridMap
-            stateGrid={activeGrid}
-            channel={channel}
-            useCelsius={useCelsius}
-            showVectors={showVectors}
-            smoothGrid={smoothGrid}
-            showBoxes={showBoxes}
-            showCities={showCities}
-            title={`Timeline Prime · ${meta.label}`}
-            subtitle={day === 0 ? "Initial State (t = 0)" : `Autoregressive Rollout · Day +${day}`}
-          />
+          {/* View Mode Bar */}
+          <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-zinc-800/80 bg-zinc-950 px-3.5 py-2">
+            <div className="flex items-center gap-2 text-xs">
+              <span className="font-medium text-zinc-200">{meta.label}</span>
+              <span className="text-zinc-600">·</span>
+              <span className="font-mono text-[11px] tabular-nums text-zinc-400">
+                {day === 0 ? "Day 0 (t=0)" : `Day +${day}`} · Min {stats.min.toFixed(1)} / Mean{" "}
+                {stats.mean.toFixed(1)} / Max {stats.max.toFixed(1)} {unit}
+              </span>
+            </div>
+
+            <div className="flex items-center gap-1 rounded-md border border-zinc-800 bg-black p-0.5 text-[11px]">
+              <button
+                type="button"
+                onClick={() => setViewMode("single")}
+                className={`flex items-center gap-1.5 rounded px-2.5 py-1 font-medium transition ${
+                  viewMode === "single"
+                    ? "bg-zinc-100 text-zinc-950"
+                    : "text-zinc-400 hover:text-zinc-200"
+                }`}
+              >
+                <Maximize2 className="h-3 w-3" />
+                Single
+              </button>
+              <button
+                type="button"
+                onClick={() => setViewMode("compare")}
+                className={`flex items-center gap-1.5 rounded px-2.5 py-1 font-medium transition ${
+                  viewMode === "compare"
+                    ? "bg-zinc-100 text-zinc-950"
+                    : "text-zinc-400 hover:text-zinc-200"
+                }`}
+              >
+                <Columns3 className="h-3 w-3" />
+                Compare (3-Up)
+              </button>
+            </div>
+          </div>
+
+          {viewMode === "single" ? (
+            <IndiaGridMap
+              stateGrid={shockPreset !== "none" ? shockActiveGrid : baseActiveGrid}
+              channel={channel}
+              useCelsius={useCelsius}
+              showVectors={showVectors}
+              smoothGrid={smoothGrid}
+              showBoxes={showBoxes}
+              showCities={showCities}
+              highlightBox={highlightBox}
+              customCenter={customRing}
+              onCellClick={handleMapClick}
+              title={
+                shockPreset !== "none"
+                  ? `Branched Timeline (${SHOCK_PRESET_META[shockPreset].short}) · ${meta.label}`
+                  : `Timeline Prime · ${meta.label}`
+              }
+              subtitle={
+                day === 0 ? "Initial State (t = 0)" : `Autoregressive Rollout · Day +${day}`
+              }
+            />
+          ) : (
+            <div className="grid grid-cols-1 gap-3 lg:grid-cols-3">
+              <IndiaGridMap
+                compact
+                stateGrid={baseActiveGrid}
+                channel={channel}
+                useCelsius={useCelsius}
+                showVectors={showVectors}
+                smoothGrid={smoothGrid}
+                showBoxes={showBoxes}
+                showCities={showCities}
+                onCellClick={handleMapClick}
+                title="Timeline Prime"
+                subtitle="Unperturbed baseline"
+              />
+              <IndiaGridMap
+                compact
+                stateGrid={shockActiveGrid}
+                channel={channel}
+                useCelsius={useCelsius}
+                showVectors={showVectors}
+                smoothGrid={smoothGrid}
+                showBoxes={showBoxes}
+                showCities={showCities}
+                highlightBox={highlightBox}
+                customCenter={customRing}
+                onCellClick={handleMapClick}
+                title={`Branched · ${SHOCK_PRESET_META[shockPreset].short}`}
+                subtitle="Perturbed rollout"
+              />
+              <IndiaGridMap
+                compact
+                mode="delta"
+                stateGrid={deltaActiveGrid}
+                channel={channel}
+                useCelsius={useCelsius}
+                showVectors={false}
+                smoothGrid={smoothGrid}
+                showBoxes={showBoxes}
+                showCities={showCities}
+                highlightBox={highlightBox}
+                customCenter={customRing}
+                onCellClick={handleMapClick}
+                title="Delta (Shocked − Prime)"
+                subtitle="Causal plume propagation"
+              />
+            </div>
+          )}
 
           <DayScrubber
             day={day}
@@ -317,32 +501,13 @@ export default function App() {
             onChangeSpeed={setSpeed}
           />
 
-          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-            <div className="rounded-xl border border-zinc-800/80 bg-zinc-950 px-3.5 py-2.5">
-              <div className="text-[11px] text-zinc-500">Min</div>
-              <div className="mt-0.5 font-mono text-sm font-medium tabular-nums text-zinc-100">
-                {stats.min.toFixed(2)} <span className="text-xs text-zinc-500">{unit}</span>
-              </div>
-            </div>
-            <div className="rounded-xl border border-zinc-800/80 bg-zinc-950 px-3.5 py-2.5">
-              <div className="text-[11px] text-zinc-500">Mean</div>
-              <div className="mt-0.5 font-mono text-sm font-medium tabular-nums text-zinc-100">
-                {stats.mean.toFixed(2)} <span className="text-xs text-zinc-500">{unit}</span>
-              </div>
-            </div>
-            <div className="rounded-xl border border-zinc-800/80 bg-zinc-950 px-3.5 py-2.5">
-              <div className="text-[11px] text-zinc-500">Max</div>
-              <div className="mt-0.5 font-mono text-sm font-medium tabular-nums text-zinc-100">
-                {stats.max.toFixed(2)} <span className="text-xs text-zinc-500">{unit}</span>
-              </div>
-            </div>
-            <div className="rounded-xl border border-zinc-800/80 bg-zinc-950 px-3.5 py-2.5">
-              <div className="text-[11px] text-zinc-500">Latency</div>
-              <div className="mt-0.5 font-mono text-sm font-medium tabular-nums text-zinc-100">
-                {simResult ? simResult.wall_ms.toFixed(0) : "—"} <span className="text-xs text-zinc-500">ms</span>
-              </div>
-            </div>
-          </div>
+          <TelemetryImpactPanel
+            wallMs={activeSim ? activeSim.wall_ms : null}
+            serverMs={activeSim ? activeSim.inference_ms : null}
+            physics={physicsMetrics}
+            impact={impactMetrics}
+            preset={shockPreset}
+          />
         </section>
       </main>
     </div>
