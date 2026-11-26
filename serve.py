@@ -15,13 +15,14 @@ app = FastAPI()
 ART_DIR = Path(__file__).resolve().parent / "artifacts"
 
 _SESSIONS = []
+_SESSION_WEIGHTS = None
 _CLIM = None
 _ANOM_STD = None
 MODEL_NAME = "monsoon-twin-persistence-fallback"
 
 
 def _load_artifacts() -> None:
-    global _SESSIONS, _CLIM, _ANOM_STD, MODEL_NAME
+    global _SESSIONS, _SESSION_WEIGHTS, _CLIM, _ANOM_STD, MODEL_NAME
     clim_p = ART_DIR / "clim.npy"
     stats_p = ART_DIR / "norm_stats.json"
     onnx_files = sorted(ART_DIR.glob("*.onnx"))
@@ -35,6 +36,30 @@ def _load_artifacts() -> None:
         opts = ort.SessionOptions()
         opts.intra_op_num_threads = 4
         _SESSIONS = [ort.InferenceSession(str(p), sess_options=opts, providers=["CPUExecutionProvider"]) for p in onnx_files]
+
+        weights_p = ART_DIR / "ensemble_weights.json"
+        if weights_p.exists():
+            raw_w = json.loads(weights_p.read_text())
+            w = np.zeros((len(onnx_files), 6), dtype=np.float32)
+            matched = False
+            for i, p in enumerate(onnx_files):
+                if p.stem in raw_w:
+                    matched = True
+                    v = raw_w[p.stem]
+                    w[i] = np.asarray(v, dtype=np.float32) if isinstance(v, (list, tuple)) else float(v)
+            if matched:
+                w = np.maximum(w, 0.0)
+                col_sum = w.sum(axis=0, keepdims=True)
+                _SESSION_WEIGHTS = np.where(col_sum > 1e-8, w / np.maximum(col_sum, 1e-8), 1.0 / len(onnx_files)).astype(
+                    np.float32
+                )
+
+        # Warm up all ONNX sessions before reporting ready so first /simulate has zero JIT spike
+        zh_warm = np.zeros((1, 3, 6, 32, 36), dtype=np.float32)
+        sc_warm = np.array([[0.0, 1.0]], dtype=np.float32)
+        for sess in _SESSIONS:
+            sess.run(None, {"z_hist": zh_warm, "doy_sc": sc_warm})
+
         MODEL_NAME = "monsoon-twin-ensemble(" + "+".join(p.stem for p in onnx_files) + ")"
 
 
@@ -81,7 +106,7 @@ def simulate(init_states: np.ndarray, doy_sincos: list[float], steps: int, pertu
     ang = float(np.arctan2(s_v, c_v))
     if ang < 0.0:
         ang += 2.0 * np.pi
-    doy_last = int(round(ang * 365.0 / (2.0 * np.pi))) % 365
+    doy_last = (int(round(ang * 365.0 / (2.0 * np.pi))) - 1) % 365
     doy_hist = np.array([(doy_last - 2) % 365, (doy_last - 1) % 365, doy_last], dtype=np.int64)
 
     z_hist = ((_transform_phys(x) - _CLIM[doy_hist]) / _ANOM_STD[None, :, None, None]).astype(np.float32)
@@ -101,7 +126,11 @@ def simulate(init_states: np.ndarray, doy_sincos: list[float], steps: int, pertu
             sv, cv = _advance_sc(sv, cv)
         all_rollouts.append(np.stack(preds, axis=0))
 
-    ens = np.mean(all_rollouts, axis=0).astype(np.float32)
+    stacked = np.stack(all_rollouts, axis=0).astype(np.float32)
+    if _SESSION_WEIGHTS is not None and stacked.shape[0] == _SESSION_WEIGHTS.shape[0]:
+        ens = np.sum(stacked * _SESSION_WEIGHTS[:, None, :, None, None], axis=0).astype(np.float32)
+    else:
+        ens = np.mean(stacked, axis=0).astype(np.float32)
     ens[:, 1] = np.maximum(ens[:, 1], 0.0)
     ens[:, 0] = np.clip(ens[:, 0], 233.15, 333.15)
     return ens

@@ -64,4 +64,4 @@ def sincos_to_doy_idx(sin_v: float, cos_v: float) -> int:
     ang = float(np.arctan2(sin_v, cos_v))
     if ang < 0:
         ang += 2.0 * np.pi
-    return int(round(ang * 365.0 / (2.0 * np.pi))) % 365
+    return (int(round(ang * 365.0 / (2.0 * np.pi))) - 1) % 365

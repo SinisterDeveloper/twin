@@ -1,4 +1,4 @@
-"""Dataset download, temporal splits, harmonic climatology, and PyTorch rollout dataset."""
+"""Dataset download, temporal splits, harmonic climatology, and GPU rollout batcher."""
 from __future__ import annotations
 
 import datetime as dt
@@ -77,13 +77,18 @@ def date_to_doy365(d: dt.date) -> int:
     return min(d.timetuple().tm_yday - 1, 364)
 
 
-def fit_harmonic_climatology(data_trans: np.ndarray, dates: np.ndarray, harmonics: int = 4) -> np.ndarray:
-    """Fit smooth 365-day harmonic climatology [365, 6, 32, 36] in transformed space."""
+def fit_harmonic_coefs(
+    data_arr: np.ndarray,
+    dates: np.ndarray,
+    harmonics: int = 4,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Fit 365-day harmonic regression, returning (coef [1+2H, C, 32, 36], smooth [365, C, 32, 36])."""
+    c_dim = data_arr.shape[1]
     doys = np.array([date_to_doy365(d) for d in dates], dtype=np.int64)
-    daily_mean = np.zeros((365, NC, NLAT, NLON), dtype=np.float64)
+    daily_mean = np.zeros((365, c_dim, NLAT, NLON), dtype=np.float64)
     counts = np.zeros(365, dtype=np.float64)
     for i, k in enumerate(doys):
-        daily_mean[k] += data_trans[i]
+        daily_mean[k] += data_arr[i]
         counts[k] += 1.0
     daily_mean /= np.maximum(counts, 1.0)[:, None, None, None]
 
@@ -94,19 +99,28 @@ def fit_harmonic_climatology(data_trans: np.ndarray, dates: np.ndarray, harmonic
         cols.append(np.cos(h * t))
     X = np.stack(cols, axis=1)  # [365, 1 + 2*harmonics]
     pinv = np.linalg.pinv(X)
-    coef = pinv @ daily_mean.reshape(365, -1)
-    smooth = (X @ coef).reshape(365, NC, NLAT, NLON).astype(np.float32)
+    coef = (pinv @ daily_mean.reshape(365, -1)).reshape(1 + 2 * harmonics, c_dim, NLAT, NLON).astype(np.float32)
+    smooth = (X @ coef.reshape(1 + 2 * harmonics, -1)).reshape(365, c_dim, NLAT, NLON).astype(np.float32)
+    return coef, smooth
+
+
+def fit_harmonic_climatology(data_trans: np.ndarray, dates: np.ndarray, harmonics: int = 4) -> np.ndarray:
+    """Fit smooth 365-day harmonic climatology [365, C, 32, 36]."""
+    _, smooth = fit_harmonic_coefs(data_trans, dates, harmonics=harmonics)
     return smooth
 
 
 def normalize_static(static: np.ndarray) -> np.ndarray:
-    """Build [4, 32, 36] static tensor: lsm, norm_orography, norm_lat, norm_lon."""
+    """Build [6, 32, 36] static tensor: lsm, norm_orography, norm_lat, norm_lon, doro_dx, doro_dy."""
     lsm = np.clip(static[0], 0.0, 1.0)
     oro = static[1]
     oro_n = (oro - oro.mean()) / (oro.std() + 1e-6)
+    doro_dy, doro_dx = np.gradient(oro_n)
+    doro_dx = doro_dx / (doro_dx.std() + 1e-6)
+    doro_dy = doro_dy / (doro_dy.std() + 1e-6)
     lat_grid = np.broadcast_to(((LAT - LAT.mean()) / (LAT.std() + 1e-6))[:, None], (NLAT, NLON))
     lon_grid = np.broadcast_to(((LON - LON.mean()) / (LON.std() + 1e-6))[None, :], (NLAT, NLON))
-    return np.stack([lsm, oro_n, lat_grid, lon_grid], axis=0).astype(np.float32)
+    return np.stack([lsm, oro_n, lat_grid, lon_grid, doro_dx, doro_dy], axis=0).astype(np.float32)
 
 
 def prepare_artifacts(
@@ -114,7 +128,7 @@ def prepare_artifacts(
     out_dir: Path,
     train_end: str = "2018-12-31",
 ) -> dict:
-    """Compute climatology, anomaly stats, and static grids on train split and save to out_dir."""
+    """Compute climatology, wind harmonic coefficients, anomaly stats, and static grids on train split."""
     out_dir.mkdir(parents=True, exist_ok=True)
     data, dates, static = load_netcdf(nc_path)
     cutoff = dt.date.fromisoformat(train_end)
@@ -126,6 +140,7 @@ def prepare_artifacts(
     clim_tr = fit_harmonic_climatology(data_tr, dates[train_mask], harmonics=4)
     raw_clim = fit_harmonic_climatology(data[train_mask], dates[train_mask], harmonics=4)
     raw_clim[:, 1] = np.maximum(raw_clim[:, 1], 0.0)
+    clim_uv_coef, _ = fit_harmonic_coefs(data[train_mask, 2:4], dates[train_mask], harmonics=4)
 
     doys = np.array([date_to_doy365(d) for d in dates[train_mask]], dtype=np.int64)
     anom = data_tr - clim_tr[doys]
@@ -136,6 +151,7 @@ def prepare_artifacts(
     np.save(out_dir / "static.npy", static_norm)
     np.save(out_dir / "clim.npy", clim_tr)
     np.save(out_dir / "raw_clim.npy", raw_clim)
+    np.save(out_dir / "clim_uv_coef.npy", clim_uv_coef)
 
     meta = {
         "channels": list(CHANNELS),
@@ -174,7 +190,7 @@ class MonsoonRolloutDataset(Dataset):
         t = int(self.valid_idx[idx])
         z_in = self.z[t - T_IN + 1 : t + 1]  # [3, 6, 32, 36]
         z_tgt = self.z[t + 1 : t + 1 + self.rollout_steps]  # [steps, 6, 32, 36]
-        sc_seq = self.doy_sc[t : t + self.rollout_steps]  # [steps, 2] (last input day + k)
+        sc_seq = self.doy_sc[t : t + self.rollout_steps]  # [steps, 2]
         doy_tgt = self.doys[t + 1 : t + 1 + self.rollout_steps]  # [steps]
         phys_tgt = self.data_phys[t + 1 : t + 1 + self.rollout_steps]  # [steps, 6, 32, 36]
         return (
@@ -184,3 +200,64 @@ class MonsoonRolloutDataset(Dataset):
             torch.from_numpy(z_tgt),
             torch.from_numpy(phys_tgt),
         )
+
+
+class GPURolloutBatcher:
+    """Holds the full ~171 MB climate tensor directly in GPU/device memory for zero-bottleneck batching."""
+
+    def __init__(
+        self,
+        data_phys: np.ndarray,
+        dates: np.ndarray,
+        clim_tr: np.ndarray,
+        anom_std: np.ndarray,
+        device: torch.device,
+        batch_size: int = 64,
+        rollout_steps: int = 1,
+        shuffle: bool = True,
+        drop_last: bool = True,
+    ):
+        self.device = device
+        self.batch_size = batch_size
+        self.rollout_steps = rollout_steps
+        self.shuffle = shuffle
+        self.drop_last = drop_last
+
+        doys = np.array([date_to_doy365(d) for d in dates], dtype=np.int64)
+        doy_sc = np.array([doy_sincos(int(d) + 1) for d in doys], dtype=np.float32)
+        data_tr = transform_physical(data_phys)
+        z = ((data_tr - clim_tr[doys]) / anom_std[None, :, None, None]).astype(np.float32)
+
+        self.z = torch.from_numpy(z).to(device)
+        self.doy_sc = torch.from_numpy(doy_sc).to(device)
+        self.doys = torch.from_numpy(doys).to(device)
+        self.data_phys = torch.from_numpy(data_phys.astype(np.float32)).to(device)
+        self.valid_idx = torch.arange(T_IN - 1, len(dates) - rollout_steps, device=device, dtype=torch.long)
+
+        self.in_offsets = torch.arange(-T_IN + 1, 1, device=device, dtype=torch.long)
+        self.set_rollout_steps(rollout_steps)
+
+    def set_rollout_steps(self, rollout_steps: int) -> None:
+        self.rollout_steps = rollout_steps
+        n_total = self.z.shape[0]
+        self.valid_idx = torch.arange(T_IN - 1, n_total - rollout_steps, device=self.device, dtype=torch.long)
+        self.sc_offsets = torch.arange(0, rollout_steps, device=self.device, dtype=torch.long)
+        self.tgt_offsets = torch.arange(1, rollout_steps + 1, device=self.device, dtype=torch.long)
+
+    def __len__(self) -> int:
+        n = len(self.valid_idx)
+        return n // self.batch_size if self.drop_last else (n + self.batch_size - 1) // self.batch_size
+
+    def __iter__(self):
+        n = len(self.valid_idx)
+        perm = torch.randperm(n, device=self.device) if self.shuffle else torch.arange(n, device=self.device)
+        limit = (n // self.batch_size) * self.batch_size if self.drop_last else n
+        for start in range(0, limit, self.batch_size):
+            t = self.valid_idx[perm[start : start + self.batch_size]]
+            z_in = self.z[t[:, None] + self.in_offsets[None, :]]
+            sc_seq = self.doy_sc[t[:, None] + self.sc_offsets[None, :]]
+            tgt_idx = t[:, None] + self.tgt_offsets[None, :]
+            doy_tgt = self.doys[tgt_idx]
+            z_tgt = self.z[tgt_idx]
+            phys_tgt = self.data_phys[tgt_idx]
+            yield z_in, sc_seq, doy_tgt, z_tgt, phys_tgt

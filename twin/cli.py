@@ -13,9 +13,9 @@ import numpy as np
 
 from .contract import CHANNELS, NC, NLAT, NLON, SCORE_STEPS, T_IN, doy_sincos
 from .data import download_dataset, prepare_artifacts
-from .evaluate import evaluate_predictor, make_predictor
+from .evaluate import evaluate_predictor, fit_ensemble_weights, make_predictor
 from .export_onnx import export_checkpoint_to_onnx
-from .models import build_model
+from .models import MODEL_NAMES, build_model
 from .train import run_training
 
 
@@ -55,16 +55,16 @@ def _base_init_states(doy: int, artifacts_dir: Path = Path("artifacts")) -> np.n
     return x
 
 
-def _build_perturbation(args) -> np.ndarray | None:
+def _build_perturbation(args, last_state: np.ndarray) -> np.ndarray | None:
     if args.shock in ("none", "null"):
         return np.zeros((NC, NLAT, NLON), dtype=np.float32) if args.shock == "null" else None
     if args.shock in ("warm_ocean", "monsoon_stall"):
         from monsoon_r1.scoring import make_shock
-        return make_shock(args.shock).astype(np.float32)
+        return make_shock(args.shock, last_state).astype(np.float32)
     # custom localized Gaussian shock
     ch = CHANNELS.index(args.shock_channel) if args.shock_channel in CHANNELS else int(args.shock_channel)
-    lat_i = np.clip(args.shock_lat - 6.0, 0.0, float(NLAT - 1))
-    lon_i = np.clip(args.shock_lon - 68.0, 0.0, float(NLON - 1))
+    lat_i = np.clip(args.shock_lat - 6.5, 0.0, float(NLAT - 1))
+    lon_i = np.clip(args.shock_lon - 65.5, 0.0, float(NLON - 1))
     yy, xx = np.meshgrid(np.arange(NLAT, dtype=np.float32), np.arange(NLON, dtype=np.float32), indexing="ij")
     r2 = ((yy - lat_i) ** 2 + (xx - lon_i) ** 2) / max(args.shock_radius ** 2, 1e-3)
     pert = np.zeros((NC, NLAT, NLON), dtype=np.float32)
@@ -75,8 +75,8 @@ def _build_perturbation(args) -> np.ndarray | None:
 def _run_simulate_cli(args) -> int:
     url = args.url.rstrip("/")
     init_states = _base_init_states(args.doy, args.artifacts_dir)
-    sc = list(doy_sincos(np.array([args.doy], dtype=np.int64))[0].astype(float))
-    pert = _build_perturbation(args)
+    sc = doy_sincos(int(args.doy))
+    pert = _build_perturbation(args, init_states[-1])
     payload = {
         "init_states": _encode_arr(init_states),
         "doy_sincos": sc,
@@ -140,15 +140,17 @@ def _run_simulate_cli(args) -> int:
 def _run_verify_cli(args) -> int:
     url = args.url.rstrip("/")
     health, h_ms = _http_json(f"{url}/health")
+    init = _base_init_states(180)
+    sc = doy_sincos(180)
     latencies = []
     for shock_name in ("null", "warm_ocean", "monsoon_stall") * ((args.calls + 2) // 3):
         if len(latencies) >= args.calls:
             break
         from monsoon_r1.scoring import make_shock
-        pert = make_shock(shock_name).astype(np.float32)
+        pert = make_shock(shock_name, init[-1]).astype(np.float32)
         payload = {
-            "init_states": _encode_arr(_base_init_states(180)),
-            "doy_sincos": list(doy_sincos(np.array([180], dtype=np.int64))[0].astype(float)),
+            "init_states": _encode_arr(init),
+            "doy_sincos": sc,
             "steps": args.days,
             "perturbation": _encode_arr(pert),
         }
@@ -186,11 +188,13 @@ def _run_verify_cli(args) -> int:
 def _smoke_test() -> None:
     import torch
 
-    static = np.zeros((4, NLAT, NLON), dtype=np.float32)
+    static = np.zeros((6, NLAT, NLON), dtype=np.float32)
+    uv_coef = np.zeros((9, 2, NLAT, NLON), dtype=np.float32)
+    anom_std = np.array([2.5, 1.0, 3.5, 2.5, 300.0, 8.0], dtype=np.float32)
     z = torch.randn(2, T_IN, NC, NLAT, NLON)
     sc = torch.tensor([[0.0, 1.0], [0.5, 0.86]], dtype=torch.float32)
-    for name in ("convnext_unet", "advect_resnet"):
-        m = build_model(name, static_grid=static)
+    for name in MODEL_NAMES:
+        m = build_model(name, static_grid=static, clim_uv_coef=uv_coef, anom_std=anom_std)
         out = m(z, sc)
         assert out.shape == (2, NC, NLAT, NLON), f"{name} bad shape {out.shape}"
         assert torch.isfinite(out).all(), f"{name} non-finite"
@@ -206,44 +210,56 @@ def main(argv=None) -> int:
     d.add_argument("--data-dir", type=Path, default=Path("data"))
     d.add_argument("--force", action="store_true")
 
-    p = sp.add_parser("prepare-artifacts", help="Compute harmonic climatology, norm stats, and static.npy")
+    p = sp.add_parser("prepare-artifacts", help="Compute harmonic climatology, wind coefs, norm stats, and static.npy")
     p.add_argument("--nc", type=Path, default=Path("data/india_climate_train.nc"))
     p.add_argument("--artifacts-dir", type=Path, default=Path("artifacts"))
     p.add_argument("--train-end", type=str, default="2018-12-31")
 
-    t = sp.add_parser("train", help="Run 2-stage A100 training curriculum")
+    t = sp.add_parser("train", help="Run 3-stage GPU-resident A100 training curriculum with EMA")
     t.add_argument("--nc", type=Path, default=Path("data/india_climate_train.nc"))
     t.add_argument("--artifacts-dir", type=Path, default=Path("artifacts"))
     t.add_argument("--out-dir", type=Path, default=Path("runs"))
-    t.add_argument("--model", choices=["convnext_unet", "advect_resnet"], required=True)
+    t.add_argument("--model", choices=list(MODEL_NAMES), required=True)
     t.add_argument("--train-end", type=str, default="2018-12-31")
     t.add_argument("--val-end", type=str, default="2021-12-31")
-    t.add_argument("--epochs-s1", type=int, default=25)
-    t.add_argument("--epochs-s2", type=int, default=25)
-    t.add_argument("--rollout-schedule", type=str, default="4,8,10")
+    t.add_argument("--epochs-s1", type=int, default=40)
+    t.add_argument("--epochs-s2", type=int, default=50)
+    t.add_argument("--epochs-s3", type=int, default=20)
+    t.add_argument("--rollout-schedule", type=str, default="2,4,6,8,10")
     t.add_argument("--batch-size", type=int, default=64)
     t.add_argument("--lr", type=float, default=1e-3)
-    t.add_argument("--w-rain", type=float, default=0.35)
+    t.add_argument("--w-rain", type=float, default=0.30)
+    t.add_argument("--w-csi", type=float, default=0.25)
     t.add_argument("--w-grad", type=float, default=0.15)
-    t.add_argument("--w-var", type=float, default=0.05)
+    t.add_argument("--w-var", type=float, default=0.15)
     t.add_argument("--pushforward-noise", type=float, default=0.03)
     t.add_argument("--seed", type=int, default=42)
     t.add_argument("--no-amp", action="store_true")
 
-    e = sp.add_parser("eval", help="Evaluate checkpoints or ONNX ensemble on 25-window + shock benchmark")
+    e = sp.add_parser("eval", help="Evaluate checkpoints or ONNX ensemble on 25-window + multi-season shock benchmark")
     e.add_argument("--nc", type=Path, default=Path("data/india_climate_train.nc"))
     e.add_argument("--artifacts-dir", type=Path, default=Path("artifacts"))
     e.add_argument("--ckpts", type=Path, nargs="*", default=None)
     e.add_argument("--onnx", type=Path, nargs="*", default=None)
+    e.add_argument("--weights-json", type=Path, default=None)
     e.add_argument("--val-start", type=str, default="2019-01-01")
+    e.add_argument("--val-end", type=str, default=None)
     e.add_argument("--out-json", type=Path, default=None)
+
+    fe = sp.add_parser("fit-ensemble", help="Optimize simplex ensemble weights strictly on Val")
+    fe.add_argument("--nc", type=Path, default=Path("data/india_climate_train.nc"))
+    fe.add_argument("--artifacts-dir", type=Path, default=Path("artifacts"))
+    fe.add_argument("--ckpts", type=Path, nargs="+", required=True)
+    fe.add_argument("--val-start", type=str, default="2019-01-01")
+    fe.add_argument("--val-end", type=str, default=None)
+    fe.add_argument("--out", type=Path, default=Path("artifacts/ensemble_weights.json"))
 
     x = sp.add_parser("export-onnx", help="Export PyTorch checkpoint to ONNX and benchmark CPU latency")
     x.add_argument("--ckpt", type=Path, required=True)
     x.add_argument("--static", type=Path, default=Path("artifacts/static.npy"))
     x.add_argument("--out", type=Path, required=True)
 
-    sp.add_parser("smoke-test", help="Verify both model architectures on synthetic tensors")
+    sp.add_parser("smoke-test", help="Verify all 4 model architectures on synthetic tensors")
 
     h = sp.add_parser("health", help="Check live /health endpoint on inference server")
     h.add_argument("--url", type=str, default="http://localhost:8000")
@@ -289,10 +305,12 @@ def main(argv=None) -> int:
             val_end=args.val_end,
             epochs_stage1=args.epochs_s1,
             epochs_stage2=args.epochs_s2,
+            epochs_stage3=args.epochs_s3,
             rollout_schedule=sched,
             batch_size=args.batch_size,
             lr=args.lr,
             w_rain=args.w_rain,
+            w_csi=args.w_csi,
             w_grad=args.w_grad,
             w_var=args.w_var,
             pushforward_noise=args.pushforward_noise,
@@ -301,13 +319,28 @@ def main(argv=None) -> int:
         )
         print(f"Best checkpoint saved: {ckpt}")
     elif args.cmd == "eval":
-        pred_fn = make_predictor(args.artifacts_dir, ckpts=args.ckpts, onnx_paths=args.onnx)
-        res = evaluate_predictor(args.nc, args.artifacts_dir, pred_fn, val_start=args.val_start)
+        pred_fn = make_predictor(
+            args.artifacts_dir,
+            ckpts=args.ckpts,
+            onnx_paths=args.onnx,
+            weights_json=args.weights_json,
+        )
+        res = evaluate_predictor(args.nc, args.artifacts_dir, pred_fn, val_start=args.val_start, val_end=args.val_end)
         txt = json.dumps(res, indent=2)
         print(txt)
         if args.out_json:
             args.out_json.parent.mkdir(parents=True, exist_ok=True)
             args.out_json.write_text(txt)
+    elif args.cmd == "fit-ensemble":
+        res = fit_ensemble_weights(
+            nc_path=args.nc,
+            artifacts_dir=args.artifacts_dir,
+            ckpts=args.ckpts,
+            val_start=args.val_start,
+            val_end=args.val_end,
+            out_path=args.out,
+        )
+        print(json.dumps(res, indent=2))
     elif args.cmd == "export-onnx":
         export_checkpoint_to_onnx(args.ckpt, args.static, args.out)
     elif args.cmd == "smoke-test":

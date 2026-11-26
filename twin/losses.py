@@ -1,25 +1,26 @@
-"""Composite physics-aware loss functions for Monsoon Climate Digital Twin."""
+"""Composite physics-aware loss functions aligned with Round-1 scoring metrics."""
 from __future__ import annotations
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from .contract import lat_weights
+from .contract import LEAD_DAYS, lat_weights
 
 HEAVY_RAIN_MM = 10.0
 
 
 class MonsoonLoss(nn.Module):
-    """Lat-weighted Huber + Heavy-Rain emphasis + Spatial Gradient & Variance anti-blur."""
+    """Lat/Lead-weighted Charbonnier+MSE + Soft-CSI & Physical tp + Gradient + Physical Anti-Blur."""
 
     def __init__(
         self,
         clim_tr: torch.Tensor,
         anom_std: torch.Tensor,
-        w_rain: float = 0.35,
+        w_rain: float = 0.30,
+        w_csi: float = 0.25,
         w_grad: float = 0.15,
-        w_var: float = 0.05,
+        w_var: float = 0.15,
         huber_delta: float = 1.0,
     ):
         super().__init__()
@@ -27,6 +28,7 @@ class MonsoonLoss(nn.Module):
         self.register_buffer("clim_tr", clim_tr)  # [365, 6, 32, 36]
         self.register_buffer("anom_std", anom_std.view(1, 1, 6, 1, 1))
         self.w_rain = w_rain
+        self.w_csi = w_csi
         self.w_grad = w_grad
         self.w_var = w_var
         self.huber_delta = huber_delta
@@ -36,6 +38,14 @@ class MonsoonLoss(nn.Module):
         dy = x[..., 1:, :] - x[..., :-1, :]
         return dx, dy
 
+    def _lead_weights(self, steps: int, device: torch.device, dtype: torch.dtype) -> torch.Tensor:
+        w = torch.ones(steps, device=device, dtype=dtype)
+        for d in LEAD_DAYS:
+            if d - 1 < steps:
+                w[d - 1] = 1.5
+        w = w / w.mean()
+        return w.view(1, steps, 1, 1, 1)
+
     def forward(
         self,
         z_pred: torch.Tensor,
@@ -44,37 +54,72 @@ class MonsoonLoss(nn.Module):
         phys_true: torch.Tensor,
     ) -> tuple[torch.Tensor, dict[str, float]]:
         """Shapes: z_pred/z_true [B, S, 6, 32, 36], doy_tgt [B, S], phys_true [B, S, 6, 32, 36]."""
-        # 1. Latitude-weighted Huber loss in normalized anomaly space
-        huber = F.huber_loss(z_pred, z_true, reduction="none", delta=self.huber_delta)
-        loss_base = (huber * self.lat_w).mean()
+        zp = z_pred.float()
+        zt = z_true.float()
+        pt = phys_true.float()
+        steps = zp.shape[1]
+        lead_w = self._lead_weights(steps, zp.device, zp.dtype)
+        spatial_w = self.lat_w * lead_w
 
-        # 2. Heavy-rain emphasis on tp (channel 1) in log1p space + soft-CSI surrogate
-        loss_rain = z_pred.new_tensor(0.0)
+        # 1. Lead & latitude weighted Huber + MSE blend in normalized anomaly space
+        huber = F.huber_loss(zp, zt, reduction="none", delta=self.huber_delta)
+        mse = (zp - zt) ** 2
+        loss_base = ((huber + 0.25 * mse) * spatial_w).mean()
+
+        # Reconstruct physical predictions carefully in float32 for rain & Day 5-10 anti-blur
+        clim_sel = self.clim_tr[doy_tgt]  # [B, S, 6, 32, 36]
+        pred_tr = zp * self.anom_std + clim_sel
+        tp_pred = torch.expm1(torch.clamp(pred_tr[:, :, 1], min=0.0, max=8.0))
+        tp_true = pt[:, :, 1]
+
+        # 2. Heavy-rain emphasis in z-space + physical-space Jensen-bias correction
+        loss_rain = zp.new_tensor(0.0)
         if self.w_rain > 0:
-            tp_true = phys_true[:, :, 1]  # [B, S, 32, 36]
             heavy_w = 1.0 + 3.0 * torch.sigmoid((tp_true - HEAVY_RAIN_MM) * 0.5)
-            tp_err = F.huber_loss(z_pred[:, :, 1], z_true[:, :, 1], reduction="none", delta=1.0)
-            loss_rain = (tp_err * heavy_w * self.lat_w[:, :, 0]).mean()
+            tp_err_z = F.huber_loss(zp[:, :, 1], zt[:, :, 1], reduction="none", delta=1.0)
+            tp_err_phys = F.huber_loss(tp_pred * 0.1, tp_true * 0.1, reduction="none", delta=1.0)
+            loss_rain = ((tp_err_z * heavy_w + 0.15 * tp_err_phys) * spatial_w[:, :, 0]).mean()
 
-        # 3. Spatial gradient loss (prevents blurry fronts)
-        loss_grad = z_pred.new_tensor(0.0)
+        # 3. Differentiable Soft-CSI surrogate at 10 mm/day
+        loss_csi = zp.new_tensor(0.0)
+        if self.w_csi > 0:
+            p_soft = torch.sigmoid((tp_pred - HEAVY_RAIN_MM) / 2.0)
+            t_bin = (tp_true > HEAVY_RAIN_MM).float()
+            inter = (p_soft * t_bin).sum()
+            union = p_soft.sum() + t_bin.sum() - inter + 1e-4
+            loss_csi = 1.0 - inter / union
+
+        # 4. Spatial gradient loss (prevents blurry fronts)
+        loss_grad = zp.new_tensor(0.0)
         if self.w_grad > 0:
-            px, py = self._spatial_grad(z_pred)
-            tx, ty = self._spatial_grad(z_true)
+            px, py = self._spatial_grad(zp)
+            tx, ty = self._spatial_grad(zt)
             loss_grad = F.l1_loss(px, tx) + F.l1_loss(py, ty)
 
-        # 4. Spatial variance preservation (directly guards against Day-8 blur < 40% variance)
-        loss_var = z_pred.new_tensor(0.0)
+        # 5. Physical-space spatial variance preservation (targets Day 5-10 anti-blur >= 0.40)
+        loss_var = zp.new_tensor(0.0)
         if self.w_var > 0:
-            vp = z_pred.var(dim=(-2, -1), unbiased=False)
-            vt = z_true.var(dim=(-2, -1), unbiased=False)
-            loss_var = F.l1_loss(torch.sqrt(vp + 1e-6), torch.sqrt(vt + 1e-6))
+            s0 = 4 if steps >= 5 else 0
+            pred_phys_late = pred_tr[:, s0:].clone()
+            pred_phys_late[:, :, 1] = torch.expm1(torch.clamp(pred_phys_late[:, :, 1], min=0.0, max=8.0))
+            true_phys_late = pt[:, s0:]
+            vp = pred_phys_late.var(dim=(-2, -1), unbiased=False)
+            vt = true_phys_late.var(dim=(-2, -1), unbiased=False)
+            ratio_std = torch.sqrt(vp / (vt + 1e-4) + 1e-6)
+            loss_var = F.l1_loss(ratio_std, torch.ones_like(ratio_std))
 
-        total = loss_base + self.w_rain * loss_rain + self.w_grad * loss_grad + self.w_var * loss_var
+        total = (
+            loss_base
+            + self.w_rain * loss_rain
+            + self.w_csi * loss_csi
+            + self.w_grad * loss_grad
+            + self.w_var * loss_var
+        )
         stats = {
             "loss": float(total.detach()),
             "base": float(loss_base.detach()),
             "rain": float(loss_rain.detach()),
+            "csi": float(loss_csi.detach()),
             "grad": float(loss_grad.detach()),
             "var": float(loss_var.detach()),
         }

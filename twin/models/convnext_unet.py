@@ -1,7 +1,7 @@
-"""Family A: Shallow 2-Scale ConvNeXt-UNet with FiLM doy conditioning and GroupNorm.
+"""Family A: Bounded-RF 2-Scale ConvNeXt-UNet v2 with Physics Features & FiLM conditioning.
 
-Bounded receptive field (~5-7 grid cells per 1-day step) and zero global pooling
-ensure Day-1 shock locality (>=60% energy within 3 cells) while capturing sharp fronts.
+Receptive field is strictly bounded (~6-7 cells per 1-day step) with zero global pooling
+to satisfy Day-1 shock locality (>=60% energy within 3 cells) while resolving sharp fronts.
 """
 from __future__ import annotations
 
@@ -11,6 +11,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from ..contract import NC, T_IN
+from .physics import PhysicsFeatureBlock
 
 
 class FiLM(nn.Module):
@@ -50,12 +51,15 @@ class ConvNeXtUNet(nn.Module):
     def __init__(
         self,
         static_grid: np.ndarray,
-        base_dim: int = 64,
-        depth: int = 3,
+        clim_uv_coef: np.ndarray | None = None,
+        anom_std: np.ndarray | None = None,
+        base_dim: int = 80,
+        depth: int = 2,
     ):
         super().__init__()
-        self.register_buffer("static_grid", torch.from_numpy(static_grid).unsqueeze(0))  # [1, 4, 32, 36]
-        in_ch = T_IN * NC + static_grid.shape[0]
+        self.register_buffer("static_grid", torch.from_numpy(static_grid).unsqueeze(0))
+        self.phys = PhysicsFeatureBlock()
+        in_ch = T_IN * NC + PhysicsFeatureBlock.OUT_CHANNELS + static_grid.shape[0]
         d1 = base_dim
         d2 = base_dim * 2
 
@@ -82,14 +86,18 @@ class ConvNeXtUNet(nn.Module):
         """z_hist: [B, 3, 6, 32, 36] (or [B, 18, 32, 36]), doy_sc: [B, 2] -> z_next [B, 6, 32, 36]."""
         if z_hist.ndim == 5:
             b, t, c, h, w = z_hist.shape
+            z_seq = z_hist
             z_flat = z_hist.reshape(b, t * c, h, w)
             z_last = z_hist[:, -1]
         else:
+            b, _, h, w = z_hist.shape
+            z_seq = z_hist.reshape(b, T_IN, NC, h, w)
             z_flat = z_hist
-            z_last = z_hist[:, -NC:]
+            z_last = z_seq[:, -1]
 
-        s = self.static_grid.expand(z_flat.shape[0], -1, -1, -1)
-        x = torch.cat([z_flat, s], dim=1)
+        pf = self.phys(z_seq)
+        s = self.static_grid.expand(b, -1, -1, -1)
+        x = torch.cat([z_flat, pf, s], dim=1)
 
         h1 = self.stem(x)
         for blk in self.enc1:

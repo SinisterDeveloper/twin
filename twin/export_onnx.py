@@ -1,6 +1,7 @@
 """Export trained PyTorch checkpoints to ONNX and benchmark CPU rollout speed."""
 from __future__ import annotations
 
+import json
 import time
 from pathlib import Path
 
@@ -18,9 +19,15 @@ def export_checkpoint_to_onnx(
     opset: int = 17,
 ) -> Path:
     static_grid = np.load(static_path)
+    art_dir = static_path.parent
+    uv_p = art_dir / "clim_uv_coef.npy"
+    clim_uv_coef = np.load(uv_p) if uv_p.exists() else None
+    stats_p = art_dir / "norm_stats.json"
+    anom_std = np.array(json.loads(stats_p.read_text())["anom_std"], dtype=np.float32) if stats_p.exists() else None
+
     ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=False)
     model_name = ckpt["model_name"]
-    model = build_model(model_name, static_grid=static_grid)
+    model = build_model(model_name, static_grid=static_grid, clim_uv_coef=clim_uv_coef, anom_std=anom_std)
     model.load_state_dict(ckpt["model"])
     model.eval()
 
@@ -41,7 +48,9 @@ def export_checkpoint_to_onnx(
 
     import onnxruntime as ort
 
-    sess = ort.InferenceSession(str(onnx_out), providers=["CPUExecutionProvider"])
+    opts = ort.SessionOptions()
+    opts.intra_op_num_threads = 4
+    sess = ort.InferenceSession(str(onnx_out), sess_options=opts, providers=["CPUExecutionProvider"])
     with torch.no_grad():
         pt_out = model(z_dummy, sc_dummy).numpy()
     ort_out = sess.run(None, {"z_hist": z_dummy.numpy(), "doy_sc": sc_dummy.numpy()})[0]
