@@ -22,8 +22,11 @@ _ANOM_STD = None
 MODEL_NAME = "monsoon-twin-persistence-fallback"
 
 
+_SESSION_STEMS: list[str] = []
+
+
 def _load_artifacts() -> None:
-    global _SESSIONS, _SESSION_WEIGHTS, _CLIM, _ANOM_STD, MODEL_NAME
+    global _SESSIONS, _SESSION_WEIGHTS, _SESSION_STEMS, _CLIM, _ANOM_STD, MODEL_NAME
     clim_p = ART_DIR / "clim.npy"
     stats_p = ART_DIR / "norm_stats.json"
     onnx_files = sorted(ART_DIR.glob("*.onnx"))
@@ -37,6 +40,7 @@ def _load_artifacts() -> None:
         opts = ort.SessionOptions()
         opts.intra_op_num_threads = min(4, os.cpu_count() or 2)
         _SESSIONS = [ort.InferenceSession(str(p), sess_options=opts, providers=["CPUExecutionProvider"]) for p in onnx_files]
+        _SESSION_STEMS = [p.stem for p in onnx_files]
 
         weights_p = ART_DIR / "ensemble_weights.json"
         if weights_p.exists():
@@ -92,7 +96,13 @@ def _advance_sc(sin_v: float, cos_v: float) -> tuple[float, float]:
     return sin_v * ca + cos_v * sa, cos_v * ca - sin_v * sa
 
 
-def simulate(init_states: np.ndarray, doy_sincos: list[float], steps: int, perturbation: np.ndarray | None) -> np.ndarray:
+def simulate_with_families(
+    init_states: np.ndarray,
+    doy_sincos: list[float],
+    steps: int,
+    perturbation: np.ndarray | None,
+) -> tuple[np.ndarray, dict[str, np.ndarray]]:
+    """Run autoregressive ensemble rollout and return (ensemble, per_family_rollouts)."""
     x = init_states.astype(np.float32).copy()
     if perturbation is not None:
         x[-1] = x[-1] + perturbation.astype(np.float32)
@@ -101,7 +111,7 @@ def simulate(init_states: np.ndarray, doy_sincos: list[float], steps: int, pertu
         out = np.repeat(x[-1][None], steps, axis=0)
         out[:, 1] = np.maximum(out[:, 1], 0.0)
         out[:, 0] = np.clip(out[:, 0], 233.15, 333.15)
-        return out
+        return out, {}
 
     s_v, c_v = float(doy_sincos[0]), float(doy_sincos[1])
     ang = float(np.arctan2(s_v, c_v))
@@ -122,8 +132,10 @@ def simulate(init_states: np.ndarray, doy_sincos: list[float], steps: int, pertu
         active_idx = list(range(len(_SESSIONS)))
 
     all_rollouts = []
+    family_rollouts: dict[str, np.ndarray] = {}
     for i in active_idx:
         sess = _SESSIONS[i]
+        stem = _SESSION_STEMS[i] if i < len(_SESSION_STEMS) else f"model_{i}"
         zh = z_hist.copy()
         sv, cv = s_v, c_v
         preds = []
@@ -135,7 +147,9 @@ def simulate(init_states: np.ndarray, doy_sincos: list[float], steps: int, pertu
             preds.append(_inv_transform_phys(t_phys))
             zh = np.concatenate([zh[1:], z_next[None]], axis=0)
             sv, cv = _advance_sc(sv, cv)
-        all_rollouts.append(np.stack(preds, axis=0))
+        fam_arr = np.stack(preds, axis=0).astype(np.float32)
+        all_rollouts.append(fam_arr)
+        family_rollouts[stem] = fam_arr
 
     stacked = np.stack(all_rollouts, axis=0).astype(np.float32)
     if use_weights:
@@ -146,6 +160,11 @@ def simulate(init_states: np.ndarray, doy_sincos: list[float], steps: int, pertu
         ens = np.mean(stacked, axis=0).astype(np.float32)
     ens[:, 1] = np.maximum(ens[:, 1], 0.0)
     ens[:, 0] = np.clip(ens[:, 0], 233.15, 333.15)
+    return ens, family_rollouts
+
+
+def simulate(init_states: np.ndarray, doy_sincos: list[float], steps: int, perturbation: np.ndarray | None) -> np.ndarray:
+    ens, _ = simulate_with_families(init_states, doy_sincos, steps, perturbation)
     return ens
 
 

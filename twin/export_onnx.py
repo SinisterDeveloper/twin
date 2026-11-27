@@ -48,6 +48,11 @@ def export_checkpoint_to_onnx(
     export_kwargs = dict(
         input_names=["z_hist", "doy_sc"],
         output_names=["z_next"],
+        dynamic_axes={
+            "z_hist": {0: "batch"},
+            "doy_sc": {0: "batch"},
+            "z_next": {0: "batch"},
+        },
         opset_version=opset,
         do_constant_folding=True,
     )
@@ -64,6 +69,15 @@ def export_checkpoint_to_onnx(
         pt_out = model(z_dummy, sc_dummy).numpy()
     ort_out = sess.run(None, {"z_hist": z_dummy.numpy(), "doy_sc": sc_dummy.numpy()})[0]
     max_diff = float(np.max(np.abs(pt_out - ort_out)))
+
+    # Verify dynamic batch axis (B=2)
+    z_b2 = torch.randn(2, T_IN, NC, NLAT, NLON, dtype=torch.float32)
+    sc_b2 = torch.tensor([[0.0, 1.0], [0.5, 0.8660254]], dtype=torch.float32)
+    with torch.no_grad():
+        pt_b2 = model(z_b2, sc_b2).numpy()
+    ort_b2 = sess.run(None, {"z_hist": z_b2.numpy(), "doy_sc": sc_b2.numpy()})[0]
+    max_diff_b2 = float(np.max(np.abs(pt_b2 - ort_b2)))
+    assert max_diff_b2 <= 1e-4, f"{onnx_out.name} batch=2 parity failed: {max_diff_b2}"
 
     # 10-step CPU latency benchmark
     t0 = time.perf_counter()

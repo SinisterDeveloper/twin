@@ -447,3 +447,58 @@ def test_shock_stability_loss_propagation_hinge():
     z_prop[:, 3:8, 2, 20:26, 20:26] = 0.8
     loss_prop = shock_stability_loss(z_base, z_prop, doy_tgt, clim_tr, anom_std, phys_std, near_mask=near)
     assert float(loss_trapped) > float(loss_prop)
+
+
+def test_frozen_pt_onnx_batch_and_rollout_parity():
+    torch = pytest.importorskip("torch")
+    ort = pytest.importorskip("onnxruntime")
+    import json
+    from pathlib import Path
+    import serve
+    from twin.contract import doy_sincos
+    from twin.models import build_model
+    from twin.rollout import load_ensemble_torch, rollout_ensemble_torch
+
+    art = Path("artifacts")
+    static = np.load(art / "static.npy")
+    uv = np.load(art / "clim_uv_coef.npy")
+    phys = np.load(art / "clim_phys_coef.npy")
+    anom = np.array(json.loads((art / "norm_stats.json").read_text())["anom_std"], dtype=np.float32)
+
+    rng = np.random.default_rng(7)
+    for name in ("advect_resnet", "convnext_unet", "pde_net"):
+        ckpt = torch.load(art / "pt" / f"{name}_best.pt", map_location="cpu", weights_only=False)
+        m = build_model(name, static_grid=static, clim_uv_coef=uv, clim_phys_coef=phys, anom_std=anom)
+        m.load_state_dict(ckpt["model"])
+        m.eval()
+        sess = ort.InferenceSession(str(art / f"{name}.onnx"), providers=["CPUExecutionProvider"])
+        for bs in (1, 3):
+            z = rng.standard_normal((bs, T_IN, NC, NLAT, NLON), dtype=np.float32)
+            sc = np.tile(np.array([[0.25, 0.9682458]], dtype=np.float32), (bs, 1))
+            with torch.no_grad():
+                pt_out = m(torch.from_numpy(z), torch.from_numpy(sc)).numpy()
+            ort_out = sess.run(None, {"z_hist": z, "doy_sc": sc})[0]
+            assert float(np.max(np.abs(pt_out - ort_out))) <= 1e-4
+
+    # P3 + P5 parity: rollout_ensemble_torch vs serve.simulate & serve.simulate_with_families
+    clim = np.load(art / "clim.npy").astype(np.float32)
+    init = clim[177:180].copy()
+    init[:, 1] = np.expm1(np.maximum(init[:, 1], 0.0))
+    sc = doy_sincos(180)
+    pert = np.zeros((NC, NLAT, NLON), dtype=np.float32)
+    pert[0, 8:14, 18:24] = 2.0
+
+    ens_srv, fam_srv = serve.simulate_with_families(init, sc, SCORE_STEPS, pert)
+    ens_srv2 = serve.simulate(init, sc, SCORE_STEPS, pert)
+    assert np.allclose(ens_srv, ens_srv2)
+    assert set(fam_srv.keys()) == {"advect_resnet", "convnext_unet", "pde_net"}
+
+    bundle = load_ensemble_torch(art)
+    init_t = torch.from_numpy(init).requires_grad_(True)
+    pert_t = torch.from_numpy(pert).requires_grad_(True)
+    ens_pt, fam_pt = rollout_ensemble_torch(bundle, init_t, sc, SCORE_STEPS, pert_t, return_families=True)
+    assert np.allclose(ens_pt.detach().numpy(), ens_srv, rtol=1e-5, atol=1e-4)
+    for k in fam_srv:
+        assert np.allclose(fam_pt[k].detach().numpy(), fam_srv[k], rtol=1e-5, atol=1e-4)
+    ens_pt[:, 1].sum().backward()
+    assert torch.isfinite(pert_t.grad).all() and float(pert_t.grad.abs().max()) > 0.0

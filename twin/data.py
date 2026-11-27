@@ -64,15 +64,13 @@ def inv_transform_physical(x: np.ndarray) -> np.ndarray:
 
 
 def transform_physical_torch(x: torch.Tensor) -> torch.Tensor:
-    out = x.clone()
-    out[..., 1, :, :] = torch.log1p(torch.clamp(out[..., 1, :, :], min=0.0))
-    return out
+    tp_log = torch.log1p(torch.clamp(x[..., 1:2, :, :], min=0.0))
+    return torch.cat([x[..., :1, :, :], tp_log, x[..., 2:, :, :]], dim=-3)
 
 
 def inv_transform_physical_torch(x: torch.Tensor) -> torch.Tensor:
-    out = x.clone()
-    out[..., 1, :, :] = torch.expm1(torch.clamp(out[..., 1, :, :], min=0.0, max=TP_LOG1P_MAX))
-    return out
+    tp_mm = torch.expm1(torch.clamp(x[..., 1:2, :, :], min=0.0, max=TP_LOG1P_MAX))
+    return torch.cat([x[..., :1, :, :], tp_mm, x[..., 2:, :, :]], dim=-3)
 
 
 def date_to_doy365(d: dt.date) -> int:
