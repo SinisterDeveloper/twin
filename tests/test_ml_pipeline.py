@@ -375,11 +375,23 @@ def test_serve_ensemble_weights_skip_disabled(tmp_path, monkeypatch):
 
 
 def test_cli_eval_live_parser():
+    from pathlib import Path
     from twin.cli import main
 
     with pytest.raises(SystemExit) as exc:
-        main(["eval-live", "--help"])
+        main(["eval", "--help"])
     assert exc.value.code == 0
+
+    from scripts.live_client import main as live_main
+
+    with pytest.raises(SystemExit) as exc2:
+        live_main(["eval-live", "--help"])
+    assert exc2.value.code == 0
+
+    # Ensure twin/ stays strictly training/offline-eval with zero HTTP endpoint strings
+    endpoint = "/" + "simulate"
+    for p in Path("twin").rglob("*.py"):
+        assert endpoint not in p.read_text(encoding="utf-8"), f"{endpoint} found in {p}"
 
 
 def test_monsoon_loss_asymmetric_tp_variance():
