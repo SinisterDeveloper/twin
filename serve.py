@@ -5,12 +5,13 @@ import argparse
 import base64
 import json
 import os
+import threading
 import time
 from pathlib import Path
 
 import numpy as np
 import uvicorn
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, Request
 
 app = FastAPI()
 ART_DIR = Path(__file__).resolve().parent / "artifacts"
@@ -181,6 +182,116 @@ async def simulate_endpoint(request: Request):
     pert = None if body.get("perturbation") is None else _arr(body["perturbation"])
     out = simulate(init, body["doy_sincos"], int(body["steps"]), pert)
     return {"rollout": np.asarray(out, dtype="f4").tolist(), "inference_ms": (time.perf_counter() - t0) * 1000.0}
+
+
+_TORCH_BUNDLE = None
+_TORCH_LOCK = threading.Lock()
+
+
+def _get_torch_bundle() -> dict:
+    """Lazily load PyTorch ensemble bundle in a thread-safe manner."""
+    global _TORCH_BUNDLE
+    if _TORCH_BUNDLE is not None:
+        return _TORCH_BUNDLE
+    with _TORCH_LOCK:
+        if _TORCH_BUNDLE is not None:
+            return _TORCH_BUNDLE
+        import torch  # noqa: F401
+        from twin.rollout import load_ensemble_torch
+
+        _TORCH_BUNDLE = load_ensemble_torch(ART_DIR, device="cpu")
+        return _TORCH_BUNDLE
+
+
+@app.post("/sensitivity")
+async def sensitivity_endpoint(request: Request):
+    from twin.contract import CHANNELS
+    from twin.sensitivity import (
+        build_target_mask,
+        compute_adjoint_sensitivity,
+        compute_reverse_shock,
+        resolve_channel_index,
+        verify_sensitivity_physics,
+    )
+
+    t0 = time.perf_counter()
+    body = await request.json()
+    try:
+        init = _arr(body["init_states"])
+        doy_sc = [float(body["doy_sincos"][0]), float(body["doy_sincos"][1])]
+        target_day = int(body["target_day"])
+        target_channel = body["target_channel"]
+        ch_idx = resolve_channel_index(target_channel)
+        ch_name = CHANNELS[ch_idx]
+        region = body["region"]
+        mask_w, (center_lat, center_lon) = build_target_mask(region)
+        direction = str(body.get("direction", "increase"))
+        threshold = body.get("threshold")
+        threshold_val = None if threshold is None else float(threshold)
+        caps = body.get("caps")
+        allowed_channels = body.get("allowed_channels")
+        models = body.get("models")
+    except (KeyError, TypeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    try:
+        bundle = _get_torch_bundle()
+    except (ImportError, FileNotFoundError, OSError, RuntimeError) as exc:
+        raise HTTPException(status_code=503, detail=f"Adjoint PyTorch backend unavailable: {exc}") from exc
+
+    adj = compute_adjoint_sensitivity(
+        bundle=bundle,
+        init_states=init,
+        doy_sincos=doy_sc,
+        target_channel=ch_idx,
+        target_day=target_day,
+        mask_w=mask_w,
+        models=models,
+    )
+    rev = compute_reverse_shock(
+        grad=adj["grad"],
+        init_states=init,
+        doy_sincos=doy_sc,
+        target_day=target_day,
+        target_channel=ch_idx,
+        mask_w=mask_w,
+        forward_fn=simulate,
+        direction=direction,
+        threshold=threshold_val,
+        caps=caps,
+        allowed_channels=allowed_channels,
+    )
+    self_check = verify_sensitivity_physics(
+        grad=adj["grad"],
+        butterfly_map=adj["butterfly_map"],
+        init_states=init,
+        doy_sincos=doy_sc,
+        target_day=target_day,
+        target_channel=ch_idx,
+        mask_w=mask_w,
+        forward_fn=simulate,
+    )
+
+    rev_out = {
+        **rev,
+        "perturbation": np.asarray(rev["perturbation"], dtype="f4").tolist(),
+    }
+    return {
+        "target": {
+            "lat": center_lat,
+            "lon": center_lon,
+            "channel": ch_name,
+            "day": target_day,
+            "mask": np.asarray(mask_w, dtype="f4").tolist(),
+        },
+        "butterfly_map": np.asarray(adj["butterfly_map"], dtype="f4").tolist(),
+        "sensitivity_signed": np.asarray(adj["grad_std"], dtype="f4").tolist(),
+        "channel_importance": adj["channel_importance"],
+        "reverse_shock": rev_out,
+        "self_check": self_check,
+        "clamped_zero_grad": bool(adj["clamped_zero_grad"]),
+        "compute_ms": (time.perf_counter() - t0) * 1000.0,
+    }
 
 
 if __name__ == "__main__":
