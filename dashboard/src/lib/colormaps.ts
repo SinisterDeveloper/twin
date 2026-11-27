@@ -1,6 +1,6 @@
 import { LAT_MAX, LAT_MIN, LON_MAX, LON_MIN, NLAT, NLON, sampleBilinear, type ChannelKey } from "./contract";
 
-export type ColormapName = "thermal" | "rain" | "wind" | "pressure" | "moisture" | "delta";
+export type ColormapName = "thermal" | "rain" | "wind" | "pressure" | "moisture" | "delta" | "butterfly";
 
 type RGB = [number, number, number];
 
@@ -58,6 +58,13 @@ const STOPS: Record<ColormapName, RGB[]> = {
     [28, 34, 48],
     [248, 134, 62],
     [214, 28, 44],
+  ],
+  butterfly: [
+    [9, 9, 14],
+    [76, 29, 149],
+    [192, 38, 158],
+    [245, 158, 11],
+    [255, 255, 255],
   ],
 };
 

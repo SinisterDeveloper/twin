@@ -46,6 +46,16 @@ function clampView(zoom: number, panX: number, panY: number): MapViewState {
   };
 }
 
+export interface AdjointMapOverlay {
+  lat: number;
+  lon: number;
+  radiusCells: number;
+  day: number;
+  r90Cells?: number;
+  centroidLat?: number;
+  centroidLon?: number;
+}
+
 interface IndiaGridMapProps {
   /** [6, 32, 36] state or delta grid for the active day */
   stateGrid: number[][][];
@@ -55,7 +65,10 @@ interface IndiaGridMapProps {
   smoothGrid: boolean;
   showCities?: boolean;
   showStates?: boolean;
-  mode?: "field" | "delta";
+  mode?: "field" | "delta" | "sensitivity";
+  sensitivityGrid?: number[][];
+  sensitivitySigned?: boolean;
+  adjointTarget?: AdjointMapOverlay | null;
   highlightBox?: GeoBox | null;
   customCenter?: { lat: number; lon: number; radiusDeg: number } | null;
   compact?: boolean;
@@ -88,6 +101,19 @@ function compassDir(u: number, v: number): string {
   return dirs[Math.round(deg / 45) % 8];
 }
 
+function computePercentileAbs(grid: number[][], p = 0.99): number {
+  const vals: number[] = [];
+  for (let i = 0; i < grid.length; i++) {
+    for (let j = 0; j < grid[i].length; j++) {
+      vals.push(Math.abs(grid[i][j]));
+    }
+  }
+  if (vals.length === 0) return 1;
+  vals.sort((a, b) => a - b);
+  const idx = Math.min(vals.length - 1, Math.floor(p * (vals.length - 1)));
+  return Math.max(vals[idx], 1e-4);
+}
+
 export function IndiaGridMap({
   stateGrid,
   channel,
@@ -97,6 +123,9 @@ export function IndiaGridMap({
   showCities = true,
   showStates = true,
   mode = "field",
+  sensitivityGrid,
+  sensitivitySigned = false,
+  adjointTarget = null,
   highlightBox = null,
   customCenter = null,
   compact = false,
@@ -185,12 +214,26 @@ export function IndiaGridMap({
   }, []);
 
   const isDelta = mode === "delta";
+  const isSensitivity = mode === "sensitivity" && Boolean(sensitivityGrid);
   const meta = CHANNEL_META[channel];
-  const cmap = isDelta ? "delta" : channelColormap(channel);
-  const [rMin, rMax] = isDelta ? [-meta.deltaMax, meta.deltaMax] : meta.range(useCelsius);
-  const scalarGrid = stateGrid[meta.index];
+  const sensP99 = isSensitivity && sensitivityGrid ? computePercentileAbs(sensitivityGrid, 0.99) : 1;
+  const cmap = isSensitivity
+    ? sensitivitySigned
+      ? "delta"
+      : "butterfly"
+    : isDelta
+      ? "delta"
+      : channelColormap(channel);
+  const [rMin, rMax] = isSensitivity
+    ? sensitivitySigned
+      ? [-sensP99, sensP99]
+      : [0, sensP99]
+    : isDelta
+      ? [-meta.deltaMax, meta.deltaMax]
+      : meta.range(useCelsius);
+  const scalarGrid = isSensitivity && sensitivityGrid ? sensitivityGrid : stateGrid[meta.index];
 
-  // Render smooth bilinear or crisp 1° meteorological heatmap / diverging delta
+  // Render smooth bilinear or crisp 1° meteorological heatmap / diverging delta / sensitivity
   useEffect(() => {
     const canvas = fieldCanvasRef.current;
     if (!canvas) return;
@@ -202,15 +245,15 @@ export function IndiaGridMap({
       scalarGrid,
       FIELD_W,
       FIELD_H,
-      (v) => (isDelta ? deltaToDisplay(v, channel) : meta.toDisplay(v, useCelsius)),
+      (v) => (isSensitivity ? v : isDelta ? deltaToDisplay(v, channel) : meta.toDisplay(v, useCelsius)),
       rMin,
       rMax,
       cmap,
       smoothGrid,
     );
-  }, [scalarGrid, meta, channel, isDelta, useCelsius, rMin, rMax, cmap, smoothGrid]);
+  }, [scalarGrid, meta, channel, isDelta, isSensitivity, useCelsius, rMin, rMax, cmap, smoothGrid]);
 
-  // Animated Windy-style wind particle streamlines (suppressed in delta mode)
+  // Animated Windy-style wind particle streamlines (suppressed in delta & sensitivity modes)
   useEffect(() => {
     const canvas = streamCanvasRef.current;
     if (!canvas) return;
@@ -218,7 +261,7 @@ export function IndiaGridMap({
     if (!ctx) return;
 
     ctx.clearRect(0, 0, STREAM_W, STREAM_H);
-    if (!showVectors || isDelta) return;
+    if (!showVectors || isDelta || isSensitivity) return;
 
     const uGrid = stateGrid[2];
     const vGrid = stateGrid[3];
@@ -284,7 +327,7 @@ export function IndiaGridMap({
 
     rafId = window.requestAnimationFrame(tick);
     return () => window.cancelAnimationFrame(rafId);
-  }, [showVectors, isDelta, stateGrid]);
+  }, [showVectors, isDelta, isSensitivity, stateGrid]);
 
   const handlePointerDown = (e: React.PointerEvent<SVGSVGElement>) => {
     if (e.button === 0 && activeView.zoom > 1) {
@@ -361,7 +404,15 @@ export function IndiaGridMap({
 
   const boxes = highlightBox ? [highlightBox] : [];
   const ticks = [0, 0.25, 0.5, 0.75, 1].map((f) => rMin + f * (rMax - rMin));
-  const unitLabel = isDelta && channel === "t2m" ? (useCelsius ? "°C" : "K") : meta.displayUnit(useCelsius);
+  const unitLabel = isSensitivity
+    ? sensitivitySigned
+      ? "∂J/∂x (σ)"
+      : "‖∇J‖"
+    : isDelta && channel === "t2m"
+      ? useCelsius
+        ? "°C"
+        : "K"
+      : meta.displayUnit(useCelsius);
 
   return (
     <div
@@ -595,6 +646,85 @@ export function IndiaGridMap({
             </g>
           )}
 
+          {adjointTarget && (() => {
+            const tx = lonToX(adjointTarget.lon);
+            const ty = latToY(adjointTarget.lat);
+            const cellW = SVG_W / NLON;
+            const cellH = SVG_H / NLAT;
+            const patchSpan = 2 * adjointTarget.radiusCells + 1;
+            const boxW = patchSpan * cellW;
+            const boxH = patchSpan * cellH;
+            const outerR = Math.min(36, 3 + 8 * adjointTarget.day) * cellW;
+            const r90R =
+              adjointTarget.r90Cells !== undefined ? adjointTarget.r90Cells * cellW : null;
+            const hasCentroid =
+              adjointTarget.centroidLat !== undefined && adjointTarget.centroidLon !== undefined;
+            const cx = hasCentroid ? lonToX(adjointTarget.centroidLon!) : null;
+            const cy = hasCentroid ? latToY(adjointTarget.centroidLat!) : null;
+
+            return (
+              <g pointerEvents="none">
+                {/* Dotted outer causal bound min(36, 3 + 8*day) */}
+                <circle
+                  cx={tx}
+                  cy={ty}
+                  r={outerR}
+                  fill="none"
+                  stroke="rgba(255, 255, 255, 0.35)"
+                  strokeWidth={0.9}
+                  strokeDasharray="1.5 3"
+                />
+                {/* Dashed causal cone ring at r90_cells */}
+                {r90R !== null && r90R > 0 && (
+                  <circle
+                    cx={tx}
+                    cy={ty}
+                    r={r90R}
+                    fill="none"
+                    stroke="rgba(245, 158, 11, 0.85)"
+                    strokeWidth={1.2}
+                    strokeDasharray="4 2.5"
+                  />
+                )}
+                {/* Dashed centroid-to-target vector */}
+                {cx !== null && cy !== null && (
+                  <g>
+                    <line
+                      x1={cx}
+                      y1={cy}
+                      x2={tx}
+                      y2={ty}
+                      stroke="rgba(244, 114, 182, 0.9)"
+                      strokeWidth={1.3}
+                      strokeDasharray="3 2"
+                    />
+                    <circle
+                      cx={cx}
+                      cy={cy}
+                      r={2.8}
+                      fill="#f472b6"
+                      stroke="#000"
+                      strokeWidth={0.9}
+                    />
+                  </g>
+                )}
+                {/* Target patch box */}
+                <rect
+                  x={tx - boxW / 2}
+                  y={ty - boxH / 2}
+                  width={boxW}
+                  height={boxH}
+                  fill="rgba(255, 255, 255, 0.08)"
+                  stroke="#ffffff"
+                  strokeWidth={1.3}
+                />
+                {/* Target crosshair */}
+                <line x1={tx - 6} y1={ty} x2={tx + 6} y2={ty} stroke="#ffffff" strokeWidth={1.1} />
+                <line x1={tx} y1={ty - 6} x2={tx} y2={ty + 6} stroke="#ffffff" strokeWidth={1.1} />
+              </g>
+            );
+          })()}
+
           {showCities &&
             MAJOR_CITIES.map((city) => {
               const cx = lonToX(city.lon);
@@ -680,10 +810,16 @@ export function IndiaGridMap({
               <span>
                 {hover.lat.toFixed(1)}°N, {hover.lon.toFixed(1)}°E
               </span>
-              {!isDelta && (
+              {!isDelta && !isSensitivity && (
                 <span className="text-cyan-300">
                   {Math.hypot(stateGrid[2][hover.i][hover.j], stateGrid[3][hover.i][hover.j]).toFixed(1)} m/s{" "}
                   {compassDir(stateGrid[2][hover.i][hover.j], stateGrid[3][hover.i][hover.j])}
+                </span>
+              )}
+              {isSensitivity && sensitivityGrid && (
+                <span className="text-amber-300">
+                  {sensitivitySigned && sensitivityGrid[hover.i][hover.j] > 0 ? "+" : ""}
+                  {sensitivityGrid[hover.i][hover.j].toFixed(3)}
                 </span>
               )}
             </div>
@@ -711,11 +847,12 @@ export function IndiaGridMap({
         />
         <div className="mt-1 flex justify-between font-mono text-[10px] tabular-nums text-zinc-400">
           {ticks.map((t, idx) => {
-            const prefix = isDelta && t > 0 ? "+" : "";
+            const prefix = (isDelta || (isSensitivity && sensitivitySigned)) && t > 0 ? "+" : "";
+            const decimals = isSensitivity && Math.abs(rMax) < 10 ? 2 : idx === 0 || idx === ticks.length - 1 ? 0 : 1;
             return (
               <span key={idx}>
                 {prefix}
-                {t.toFixed(idx === 0 || idx === ticks.length - 1 ? 0 : 1)}
+                {t.toFixed(decimals)}
                 {idx === ticks.length - 1 ? ` ${unitLabel}` : ""}
               </span>
             );
