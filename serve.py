@@ -81,7 +81,7 @@ def _transform_phys(x: np.ndarray) -> np.ndarray:
 
 def _inv_transform_phys(x: np.ndarray) -> np.ndarray:
     out = x.astype(np.float32, copy=True)
-    out[..., 1, :, :] = np.expm1(np.clip(out[..., 1, :, :], 0.0, 5.8))
+    out[..., 1, :, :] = np.expm1(np.clip(out[..., 1, :, :], 0.0, 4.15))
     out[..., 0, :, :] = np.clip(out[..., 0, :, :], 233.15, 333.15)
     return out
 

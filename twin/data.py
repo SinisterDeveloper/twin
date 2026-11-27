@@ -45,6 +45,9 @@ def load_netcdf(nc_path: Path) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     return data, dates, static
 
 
+TP_LOG1P_MAX = 4.15
+
+
 def transform_physical(x: np.ndarray) -> np.ndarray:
     """Physical [..., 6, 32, 36] -> transformed space with log1p(tp)."""
     out = np.array(x, dtype=np.float32, copy=True)
@@ -55,7 +58,7 @@ def transform_physical(x: np.ndarray) -> np.ndarray:
 def inv_transform_physical(x: np.ndarray) -> np.ndarray:
     """Transformed space -> physical [..., 6, 32, 36] with non-negative rain."""
     out = np.array(x, dtype=np.float32, copy=True)
-    out[..., 1, :, :] = np.expm1(np.clip(out[..., 1, :, :], 0.0, 5.8))
+    out[..., 1, :, :] = np.expm1(np.clip(out[..., 1, :, :], 0.0, TP_LOG1P_MAX))
     out[..., 0, :, :] = np.clip(out[..., 0, :, :], 233.15, 333.15)
     return out
 
@@ -68,7 +71,7 @@ def transform_physical_torch(x: torch.Tensor) -> torch.Tensor:
 
 def inv_transform_physical_torch(x: torch.Tensor) -> torch.Tensor:
     out = x.clone()
-    out[..., 1, :, :] = torch.expm1(torch.clamp(out[..., 1, :, :], min=0.0, max=5.8))
+    out[..., 1, :, :] = torch.expm1(torch.clamp(out[..., 1, :, :], min=0.0, max=TP_LOG1P_MAX))
     return out
 
 

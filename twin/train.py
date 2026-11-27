@@ -72,7 +72,7 @@ def _compute_shock_stab_loss(
     doy_last = (doy_tgt[:, 0] - 1) % 365
     clim_last = clim_tr_t[doy_last]  # [B, 6, H, W]
     phys_tr_last = z_in[:, -1] * anom_std_t.view(1, 6, 1, 1) + clim_last
-    tp_last = torch.expm1(torch.clamp(phys_tr_last[:, 1], 0.0, 5.8))
+    tp_last = torch.expm1(torch.clamp(phys_tr_last[:, 1], 0.0, 4.15))
     tcwv_last = torch.clamp(phys_tr_last[:, 5], min=0.0)
     wind_spd = torch.sqrt(phys_tr_last[:, 2] ** 2 + phys_tr_last[:, 3] ** 2)
 
