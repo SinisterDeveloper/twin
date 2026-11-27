@@ -1,12 +1,25 @@
 import { useCallback, useEffect, useMemo, useState, type CSSProperties } from "react";
+import {
+  ADJOINT_PRESETS,
+  AdjointPanel,
+  type AdjointConfig,
+  type AdjointOverlayChannel,
+} from "./components/AdjointPanel";
 import { DayScrubber } from "./components/DayScrubber";
-import { DEFAULT_MAP_VIEW, IndiaGridMap, type MapViewState } from "./components/IndiaGridMap";
+import {
+  DEFAULT_MAP_VIEW,
+  IndiaGridMap,
+  type AdjointMapOverlay,
+  type MapViewState,
+} from "./components/IndiaGridMap";
 import { ShockBuilder } from "./components/ShockBuilder";
 import { TelemetryImpactPanel } from "./components/TelemetryImpactPanel";
 import {
   fetchHealth,
   mockSimulate,
+  postSensitivity,
   postSimulate,
+  type SensitivityResponse,
   type SimulateRequest,
   type SimulateResponse,
 } from "./lib/api";
@@ -80,6 +93,23 @@ export default function App() {
     radiusDeg: 2.5,
     intensity: 3.0,
   });
+  const [reversePerturbation, setReversePerturbation] = useState<number[][][] | null>(null);
+  const [sidebarTab, setSidebarTab] = useState<"forward" | "adjoint">("forward");
+  const [adjointConfig, setAdjointConfig] = useState<AdjointConfig>(() => {
+    const p = ADJOINT_PRESETS[0];
+    return {
+      lat: p.lat,
+      lon: p.lon,
+      targetChannel: p.targetChannel,
+      targetDay: p.targetDay,
+      radiusCells: 1,
+      direction: p.direction,
+      threshold: "",
+    };
+  });
+  const [adjointOverlay, setAdjointOverlay] = useState<AdjointOverlayChannel>("all");
+  const [sensitivityResult, setSensitivityResult] = useState<SensitivityResponse | null>(null);
+  const [loadingAdjoint, setLoadingAdjoint] = useState<boolean>(false);
   const [viewMode, setViewMode] = useState<"single" | "compare">("single");
 
   const [day, setDay] = useState<number>(0);
@@ -111,8 +141,10 @@ export default function App() {
   }, [era5, doy]);
 
   const perturbation = useMemo(
-    () => buildPerturbation(shockPreset, initStates[initStates.length - 1], customShock),
-    [shockPreset, initStates, customShock],
+    () =>
+      reversePerturbation ??
+      buildPerturbation(shockPreset, initStates[initStates.length - 1], customShock),
+    [reversePerturbation, shockPreset, initStates, customShock],
   );
 
   const checkServerHealth = useCallback(async () => {
@@ -179,6 +211,7 @@ export default function App() {
   }, [playing, speed]);
 
   const handlePresetChange = (next: ShockPreset) => {
+    setReversePerturbation(null);
     setShockPreset(next);
     if (next === "none") {
       setViewMode("single");
@@ -187,6 +220,42 @@ export default function App() {
       if (day === 0) setDay(1);
     }
   };
+
+  const handleComputeAdjoint = useCallback(async () => {
+    setLoadingAdjoint(true);
+    try {
+      const parsedThresh = adjointConfig.threshold.trim()
+        ? Number(adjointConfig.threshold)
+        : null;
+      const res = await postSensitivity({
+        init_states: initStates,
+        doy_sincos: doySinCos(doy),
+        target_channel: adjointConfig.targetChannel,
+        target_day: adjointConfig.targetDay,
+        region: {
+          kind: "point",
+          lat: adjointConfig.lat,
+          lon: adjointConfig.lon,
+          radius_cells: adjointConfig.radiusCells,
+        },
+        direction: adjointConfig.direction,
+        threshold: parsedThresh !== null && Number.isFinite(parsedThresh) ? parsedThresh : null,
+      });
+      setSensitivityResult(res);
+    } finally {
+      setLoadingAdjoint(false);
+    }
+  }, [initStates, doy, adjointConfig]);
+
+  const handleApplyReverseShock = useCallback(() => {
+    if (!sensitivityResult) return;
+    setReversePerturbation(sensitivityResult.reverse_shock.perturbation);
+    setChannel(sensitivityResult.target.channel);
+    setSidebarTab("forward");
+    setViewMode("compare");
+    setPlaying(false);
+    setDay(sensitivityResult.target.day);
+  }, [sensitivityResult]);
 
   const baseActiveGrid = useMemo(() => {
     if (day === 0 || !baseResult) return initStates[initStates.length - 1];
@@ -226,14 +295,39 @@ export default function App() {
   const meta = CHANNEL_META[channel];
   const unit = meta.displayUnit(useCelsius);
   const activeSim = shockResult ?? baseResult;
-  const highlightBox = SHOCK_PRESET_META[shockPreset].box;
+  const hasActiveShock = Boolean(reversePerturbation) || shockPreset !== "none";
+  const shockTitle = reversePerturbation
+    ? "Reverse Shock"
+    : SHOCK_PRESET_META[shockPreset].short;
+  const highlightBox = reversePerturbation ? null : SHOCK_PRESET_META[shockPreset].box;
   const customRing =
-    shockPreset === "custom"
+    !reversePerturbation && shockPreset === "custom"
       ? { lat: customShock.lat, lon: customShock.lon, radiusDeg: customShock.radiusDeg }
       : null;
 
-  const handleMapClick =
-    shockPreset === "custom"
+  const isAdjointMode = sidebarTab === "adjoint";
+  const adjointOverlayProps: AdjointMapOverlay | null = isAdjointMode
+    ? {
+        lat: sensitivityResult ? sensitivityResult.target.center_lat : adjointConfig.lat,
+        lon: sensitivityResult ? sensitivityResult.target.center_lon : adjointConfig.lon,
+        radiusCells: adjointConfig.radiusCells,
+        day: sensitivityResult ? sensitivityResult.target.day : adjointConfig.targetDay,
+        r90Cells: sensitivityResult?.self_check.cone_check.r90_cells,
+        centroidLat: sensitivityResult?.self_check.cone_check.centroid_lat,
+        centroidLon: sensitivityResult?.self_check.cone_check.centroid_lon,
+      }
+    : null;
+
+  const activeSensitivityGrid =
+    isAdjointMode && sensitivityResult
+      ? adjointOverlay === "all"
+        ? sensitivityResult.butterfly_map
+        : sensitivityResult.sensitivity_signed[CHANNEL_META[adjointOverlay].index]
+      : undefined;
+
+  const handleMapClick = isAdjointMode
+    ? (lat: number, lon: number) => setAdjointConfig((prev) => ({ ...prev, lat, lon }))
+    : shockPreset === "custom"
       ? (lat: number, lon: number) => setCustomShock((prev) => ({ ...prev, lat, lon }))
       : undefined;
 
@@ -261,13 +355,53 @@ export default function App() {
       <main className="relative z-10 mx-auto grid max-w-[1440px] grid-cols-1 md:grid-cols-[268px_1fr]">
         {/* Unified Left Sidebar Rail */}
         <aside className="flex flex-col gap-5 border-b border-white/[0.07] bg-white/[0.012] px-4 py-4 md:border-b-0 md:border-r">
-          <ShockBuilder
-            preset={shockPreset}
-            custom={customShock}
-            loading={loadingSim}
-            onChangePreset={handlePresetChange}
-            onChangeCustom={setCustomShock}
-          />
+          {/* Mode Tab Switcher */}
+          <div className="grid grid-cols-2 gap-0.5 rounded-md border border-white/[0.08] bg-white/[0.03] p-0.5 text-[11px]">
+            <button
+              type="button"
+              onClick={() => setSidebarTab("forward")}
+              className={`rounded px-2 py-1 font-medium transition ${
+                sidebarTab === "forward"
+                  ? "bg-zinc-100 text-zinc-950 shadow-sm"
+                  : "text-zinc-400 hover:text-zinc-200"
+              }`}
+            >
+              Forward Shock
+            </button>
+            <button
+              type="button"
+              onClick={() => setSidebarTab("adjoint")}
+              className={`rounded px-2 py-1 font-medium transition ${
+                sidebarTab === "adjoint"
+                  ? "bg-zinc-100 text-zinc-950 shadow-sm"
+                  : "text-zinc-400 hover:text-zinc-200"
+              }`}
+            >
+              Adjoint Map
+            </button>
+          </div>
+
+          {sidebarTab === "forward" ? (
+            <ShockBuilder
+              preset={shockPreset}
+              custom={customShock}
+              loading={loadingSim}
+              onChangePreset={handlePresetChange}
+              onChangeCustom={setCustomShock}
+            />
+          ) : (
+            <AdjointPanel
+              config={adjointConfig}
+              overlayChannel={adjointOverlay}
+              loading={loadingAdjoint}
+              result={sensitivityResult}
+              useCelsius={useCelsius}
+              onChangeConfig={setAdjointConfig}
+              onChangeOverlayChannel={setAdjointOverlay}
+              onCompute={handleComputeAdjoint}
+              onApplyReverseShock={handleApplyReverseShock}
+            />
+          )}
 
           <section className="border-t border-white/[0.07] pt-4">
             <div className="mb-2.5 text-[11px] font-medium uppercase tracking-wider text-zinc-500">
@@ -403,9 +537,38 @@ export default function App() {
             </div>
           </div>
 
-          {viewMode === "single" ? (
+          {isAdjointMode ? (
             <IndiaGridMap
-              stateGrid={shockPreset !== "none" ? shockActiveGrid : baseActiveGrid}
+              mode={activeSensitivityGrid ? "sensitivity" : "field"}
+              stateGrid={baseActiveGrid}
+              sensitivityGrid={activeSensitivityGrid}
+              sensitivitySigned={adjointOverlay !== "all"}
+              adjointTarget={adjointOverlayProps}
+              channel={channel}
+              useCelsius={useCelsius}
+              showVectors={showVectors}
+              smoothGrid={smoothGrid}
+              showCities={showCities}
+              showStates={showStates}
+              view={mapView}
+              onViewChange={setMapView}
+              onCellClick={handleMapClick}
+              title={
+                activeSensitivityGrid
+                  ? adjointOverlay === "all"
+                    ? "Adjoint Butterfly Map (‖∇J‖)"
+                    : `Adjoint Sensitivity (${adjointOverlay})`
+                  : "Adjoint Target Selection"
+              }
+              subtitle={
+                sensitivityResult
+                  ? `Day +${sensitivityResult.target.day} ${sensitivityResult.target.channel} · ${sensitivityResult.target.center_lat.toFixed(1)}°N, ${sensitivityResult.target.center_lon.toFixed(1)}°E`
+                  : `Click map or compute · ${adjointConfig.lat.toFixed(1)}°N, ${adjointConfig.lon.toFixed(1)}°E`
+              }
+            />
+          ) : viewMode === "single" ? (
+            <IndiaGridMap
+              stateGrid={hasActiveShock ? shockActiveGrid : baseActiveGrid}
               channel={channel}
               useCelsius={useCelsius}
               showVectors={showVectors}
@@ -417,7 +580,7 @@ export default function App() {
               view={mapView}
               onViewChange={setMapView}
               onCellClick={handleMapClick}
-              title={shockPreset !== "none" ? SHOCK_PRESET_META[shockPreset].short : "Baseline"}
+              title={hasActiveShock ? shockTitle : "Baseline"}
             />
           ) : (
             <div className="grid grid-cols-1 gap-3 lg:grid-cols-3">
@@ -449,7 +612,7 @@ export default function App() {
                 view={mapView}
                 onViewChange={setMapView}
                 onCellClick={handleMapClick}
-                title={SHOCK_PRESET_META[shockPreset].short}
+                title={shockTitle}
               />
               <IndiaGridMap
                 compact
