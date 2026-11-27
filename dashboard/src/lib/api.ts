@@ -34,6 +34,14 @@ export async function fetchHealth(baseUrl = "/api"): Promise<HealthResponse> {
   };
 }
 
+export async function warmupSensitivity(baseUrl = "/api"): Promise<void> {
+  try {
+    await fetch(`${baseUrl}/sensitivity/warmup`, { method: "POST" });
+  } catch {
+    // Non-fatal: /sensitivity will lazy-load on demand if warmup fails.
+  }
+}
+
 export async function postSimulate(
   req: SimulateRequest,
   baseUrl = "/api",
@@ -202,26 +210,22 @@ export async function postSensitivity(
   baseUrl = "/api",
 ): Promise<SensitivityResponse> {
   const t0 = performance.now();
-  try {
+  {
     const res = await fetch(`${baseUrl}/sensitivity`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(req),
     });
-    if (res.status === 501 || res.status === 503) {
-      return mockSensitivity(req);
-    }
     if (!res.ok) {
       throw new Error(`Sensitivity HTTP ${res.status}`);
     }
-    const data = (await res.json()) as Omit<SensitivityResponse, "source">;
+    const data = (await res.json()) as Omit<SensitivityResponse, "source" | "target"> & { target: SensitivityResponse["target"] & { lat: number; lon: number } };
     return {
       ...data,
+      target: { ...data.target, center_lat: data.target.lat, center_lon: data.target.lon },
       compute_ms: data.compute_ms ?? performance.now() - t0,
       source: "live",
     };
-  } catch {
-    return mockSensitivity(req);
   }
 }
 

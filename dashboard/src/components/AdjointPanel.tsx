@@ -68,6 +68,7 @@ interface AdjointPanelProps {
   overlayChannel: AdjointOverlayChannel;
   loading: boolean;
   result: SensitivityResponse | null;
+  error: string | null;
   useCelsius: boolean;
   onChangeConfig: (next: AdjointConfig) => void;
   onChangeOverlayChannel: (next: AdjointOverlayChannel) => void;
@@ -86,6 +87,7 @@ export function AdjointPanel({
   overlayChannel,
   loading,
   result,
+  error,
   useCelsius,
   onChangeConfig,
   onChangeOverlayChannel,
@@ -310,6 +312,8 @@ export function AdjointPanel({
       >
         {loading ? "Computing Adjoint..." : "Compute Butterfly Map"}
       </button>
+
+      {error && <p role="alert" className="text-xs text-amber-300">Sensitivity unavailable: {error}. Check the backend and try again.</p>}
 
       {/* Results Card */}
       {result && (

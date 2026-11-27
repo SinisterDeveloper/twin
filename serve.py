@@ -203,6 +203,20 @@ def _get_torch_bundle() -> dict:
         return _TORCH_BUNDLE
 
 
+@app.post("/sensitivity/warmup")
+def sensitivity_warmup():
+    t0 = time.perf_counter()
+    try:
+        bundle = _get_torch_bundle()
+    except (ImportError, FileNotFoundError, OSError, RuntimeError) as exc:
+        raise HTTPException(status_code=503, detail=f"Adjoint PyTorch backend unavailable: {exc}") from exc
+    return {
+        "status": "ready",
+        "models": list(bundle["models"].keys()),
+        "load_ms": (time.perf_counter() - t0) * 1000.0,
+    }
+
+
 @app.post("/sensitivity")
 async def sensitivity_endpoint(request: Request):
     from twin.contract import CHANNELS

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, type CSSProperties } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import {
   ADJOINT_PRESETS,
   AdjointPanel,
@@ -19,6 +19,7 @@ import {
   mockSimulate,
   postSensitivity,
   postSimulate,
+  warmupSensitivity,
   type SensitivityResponse,
   type SimulateRequest,
   type SimulateResponse,
@@ -110,6 +111,9 @@ export default function App() {
   const [adjointOverlay, setAdjointOverlay] = useState<AdjointOverlayChannel>("all");
   const [sensitivityResult, setSensitivityResult] = useState<SensitivityResponse | null>(null);
   const [loadingAdjoint, setLoadingAdjoint] = useState<boolean>(false);
+  const [adjointError, setAdjointError] = useState<string | null>(null);
+  const simVersion = useRef(0);
+  const adjointVersion = useRef(0);
   const [viewMode, setViewMode] = useState<"single" | "compare">("single");
 
   const [day, setDay] = useState<number>(0);
@@ -151,6 +155,7 @@ export default function App() {
     try {
       await fetchHealth();
       setServerOffline(false);
+      void warmupSensitivity();
     } catch {
       setServerOffline(true);
     }
@@ -158,13 +163,17 @@ export default function App() {
 
   const executeSim = useCallback(async (req: SimulateRequest): Promise<SimulateResponse> => {
     try {
-      return await postSimulate(req);
+      const result = await postSimulate(req);
+      setServerOffline(false);
+      return result;
     } catch {
+      setServerOffline(true);
       return mockSimulate(req);
     }
   }, []);
 
   const runSimulation = useCallback(async () => {
+    const version = ++simVersion.current;
     setLoadingSim(true);
     const sc = doySinCos(doy);
     const baseReq: SimulateRequest = {
@@ -182,15 +191,17 @@ export default function App() {
           perturbation,
         };
         const [bRes, sRes] = await Promise.all([executeSim(baseReq), executeSim(shockReq)]);
+        if (version !== simVersion.current) return;
         setBaseResult(bRes);
         setShockResult(sRes);
       } else {
         const bRes = await executeSim(baseReq);
+        if (version !== simVersion.current) return;
         setBaseResult(bRes);
         setShockResult(null);
       }
     } finally {
-      setLoadingSim(false);
+      if (version === simVersion.current) setLoadingSim(false);
     }
   }, [initStates, doy, perturbation, executeSim]);
 
@@ -222,6 +233,8 @@ export default function App() {
   };
 
   const handleComputeAdjoint = useCallback(async () => {
+    const version = ++adjointVersion.current;
+    setAdjointError(null);
     setLoadingAdjoint(true);
     try {
       const parsedThresh = adjointConfig.threshold.trim()
@@ -241,11 +254,23 @@ export default function App() {
         direction: adjointConfig.direction,
         threshold: parsedThresh !== null && Number.isFinite(parsedThresh) ? parsedThresh : null,
       });
-      setSensitivityResult(res);
+      if (version === adjointVersion.current) setSensitivityResult(res);
+    } catch (error) {
+      if (version === adjointVersion.current) {
+        setSensitivityResult(null);
+        setAdjointError(error instanceof Error ? error.message : "Sensitivity request failed");
+      }
     } finally {
-      setLoadingAdjoint(false);
+      if (version === adjointVersion.current) setLoadingAdjoint(false);
     }
   }, [initStates, doy, adjointConfig]);
+
+  useEffect(() => {
+    adjointVersion.current += 1;
+    setSensitivityResult(null);
+    setAdjointError(null);
+    setLoadingAdjoint(false);
+  }, [adjointConfig, initStates, doy]);
 
   const handleApplyReverseShock = useCallback(() => {
     if (!sensitivityResult) return;
@@ -345,7 +370,7 @@ export default function App() {
             Multiverse of Monsoon
           </h1>
 
-          {serverOffline && (
+          {(serverOffline || baseResult?.source === "mock" || shockResult?.source === "mock") && (
             <span className="font-mono text-[11px] text-zinc-500">Server offline · mock</span>
           )}
         </div>
@@ -395,6 +420,7 @@ export default function App() {
               overlayChannel={adjointOverlay}
               loading={loadingAdjoint}
               result={sensitivityResult}
+              error={adjointError}
               useCelsius={useCelsius}
               onChangeConfig={setAdjointConfig}
               onChangeOverlayChannel={setAdjointOverlay}
@@ -652,7 +678,7 @@ export default function App() {
             wallMs={activeSim ? activeSim.wall_ms : null}
             physics={physicsMetrics}
             impact={impactMetrics}
-            preset={shockPreset}
+            preset={reversePerturbation ? "custom" : shockPreset}
           />
         </section>
       </main>
